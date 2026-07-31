@@ -30,6 +30,12 @@ st.title("🚀 QuantForge – Backtest Engine")
 st.markdown("Upload your CSV data, define parameters, and get AI‑powered analysis.")
 
 # --------------------------------------------------------------
+# DEMO MODE BANNER (appears when demo mode is active)
+# --------------------------------------------------------------
+if st.session_state.demo_mode:
+    st.info("ℹ️ **Demo Mode Active** – running the MA Crossover demo strategy (not the validated edge).")
+
+# --------------------------------------------------------------
 # SIDEBAR – PRESETS
 # --------------------------------------------------------------
 st.sidebar.header("⚡ Presets")
@@ -40,8 +46,17 @@ if st.sidebar.button("🎯 Load Demo Preset (MA Crossover)"):
     st.session_state.start_date = pd.to_datetime("2023-01-01")
     st.session_state.end_date = pd.to_datetime("2025-01-01")
     st.session_state.demo_mode = True
-    st.toast("📂 Please upload your CSV files to test the demo strategy.", icon="📂")
     st.rerun()
+
+st.sidebar.markdown("---")
+
+# --------------------------------------------------------------
+# DEMO MODE INDICATOR (in sidebar)
+# --------------------------------------------------------------
+if st.session_state.demo_mode:
+    st.sidebar.warning("🧪 Demo Mode: MA Crossover")
+else:
+    st.sidebar.success("🔒 Validated Strategy")
 
 st.sidebar.markdown("---")
 
@@ -82,7 +97,6 @@ uploaded_files = st.sidebar.file_uploader(
 
 if not uploaded_files:
     st.info("👈 Please upload your CSV files (BID and ASK) in the sidebar to get started.")
-    # We will still show the toast from the preset button, but this is a fallback.
     st.stop()
 
 if "uploaded_data" not in st.session_state:
@@ -135,13 +149,13 @@ if st.sidebar.button("Run Single Backtest"):
             try:
                 # Check demo mode
                 if st.session_state.demo_mode:
-                    st.info("ℹ️ Running DEMO strategy (MA Crossover) – not the validated edge.")
                     results, trades_df, monthly_df = run_demo_backtest(
                         st.session_state.uploaded_data,
                         risk_cents=risk_cents,
                         start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
                         end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
                     )
+                    st.info("ℹ️ Ran DEMO strategy (MA Crossover) – not the validated edge.")
                 else:
                     results, trades_df, monthly_df = run_backtest_from_files(
                         st.session_state.uploaded_data,
