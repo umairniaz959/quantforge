@@ -48,8 +48,8 @@ st.sidebar.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
 st.sidebar.subheader("EA Export")
 ea_magic = st.sidebar.number_input("Magic Number", value=123457, step=1)
 if st.sidebar.button("Download EA (MQL4)"):
-    # Generate EA code (same as before – using the full code from earlier)
-    # I will include the full EA code here (truncated for brevity, but it's the same as before)
+    # EA code generation – using the full code from previous versions
+    # (I will include the full EA code here – truncated for brevity in this response)
     ea_code = f"""//+------------------------------------------------------------------+
 //|                                   Proposal3_1_ZoneLimit_Overlap  |
 //|  Faithful replica of the Python "PROPOSAL 3.1" file:             |
@@ -74,7 +74,7 @@ if st.sidebar.button("Download EA (MQL4)"):
 //+------------------------------------------------------------------+
 //| Input parameters                                                 |
 //+------------------------------------------------------------------+
-extern double RiskMoney        = {risk_cents}.0;   // FIXED flat risk per trade, account currency units
+extern double RiskMoney        = {risk_cents}.0;
 extern int    Slippage         = 3;
 extern int    MagicNumber      = {ea_magic};
 extern int    MaxBarsOpen      = 50;
@@ -85,7 +85,7 @@ extern double BE_Multiplier    = 1.5;
 extern double Trail_Activate   = 3.0;
 extern double Trail_Dist       = 1.0;
 
-// ... (rest of the EA code – use the full version from previous messages)
+// ... (rest of EA code – use the full version from earlier messages)
 """
     st.download_button(
         label="Download EA (MQL4)",
@@ -128,19 +128,22 @@ if st.sidebar.button("Run Single Backtest"):
                     col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
                     # --------------------------------------------------
-                    # EQUITY CURVE CHART
+                    # EQUITY CURVE CHART (with fixed drawdown scaling)
                     # --------------------------------------------------
                     if monthly_df:
                         df_month = pd.DataFrame(monthly_df)
-                        # Create a cumulative equity curve from the monthly P&L
+                        # Cumulative P&L in USD
                         df_month['Cumulative P&L (USD)'] = (df_month['Monthly P&L (cents)'] / 100.0).cumsum()
+                        # Drawdown in USD (peak - current)
                         df_month['Drawdown (USD)'] = df_month['Cumulative P&L (USD)'].cummax() - df_month['Cumulative P&L (USD)']
+                        max_dd_from_chart = df_month['Drawdown (USD)'].max()
 
+                        # Subplots: equity curve and drawdown
                         fig = make_subplots(
                             rows=2, cols=1,
                             shared_xaxes=True,
                             vertical_spacing=0.1,
-                            subplot_titles=("Equity Curve", "Drawdown (USD)")
+                            subplot_titles=("Equity Curve (USD)", "Drawdown (USD)")
                         )
 
                         # Equity curve
@@ -155,7 +158,7 @@ if st.sidebar.button("Run Single Backtest"):
                             row=1, col=1
                         )
 
-                        # Drawdown
+                        # Drawdown bars (positive values)
                         fig.add_trace(
                             go.Bar(
                                 x=df_month['Month'],
@@ -166,8 +169,27 @@ if st.sidebar.button("Run Single Backtest"):
                             row=2, col=1
                         )
 
-                        fig.update_layout(height=600, showlegend=False)
+                        # Fix drawdown y‑axis: start at 0 and go slightly above max
+                        max_dd = df_month['Drawdown (USD)'].max()
+                        if max_dd > 0:
+                            fig.update_yaxes(
+                                row=2, col=1,
+                                range=[0, max_dd * 1.1],
+                                title_text="Drawdown (USD)"
+                            )
+                        else:
+                            fig.update_yaxes(row=2, col=1, range=[0, 1], title_text="Drawdown (USD)")
+
+                        # Add a horizontal line at the max drawdown value (optional)
+                        if max_dd > 0:
+                            fig.add_hline(y=max_dd, line_dash="dash", line_color="orange", row=2, col=1,
+                                          annotation_text=f"Max DD: ${max_dd:.2f}")
+
+                        fig.update_layout(height=700, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
+
+                        # Also show the max drawdown from the chart for verification
+                        st.caption(f"Max Drawdown from chart: ${max_dd_from_chart:.2f}")
 
                     # --------------------------------------------------
                     # METRICS AND TABLES
