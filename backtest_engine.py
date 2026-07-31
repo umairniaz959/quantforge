@@ -178,7 +178,7 @@ def get_spread_pips(pair_name, bid_price, ask_price):
     return spread_pips, limit_pips
 
 # --------------------------------------------------------------
-# Core simulation (runs on already loaded arrays)
+# Core simulation (runs on already loaded arrays) – Validated Strategy
 # --------------------------------------------------------------
 def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
                              risk_cents=RISK_CENTS,
@@ -481,7 +481,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
     return results, df_trades, monthly_details
 
 # --------------------------------------------------------------
-# Public functions for the web app
+# Public functions for the web app (Real Strategy)
 # --------------------------------------------------------------
 def run_backtest_from_files(uploaded_files, risk_cents=RISK_CENTS,
                             withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
@@ -555,3 +555,161 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
         'Average Monthly (USD)': combined_withdrawn_usd / combined_months if combined_months > 0 else 0,
     }
     return block_results, summary
+
+# --------------------------------------------------------------
+# DEMO STRATEGY (Moving Average Crossover – for demonstration only)
+# --------------------------------------------------------------
+def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
+                      start_date=None, end_date=None):
+    """
+    A simple MA crossover strategy for demo purposes.
+    This is NOT the validated strategy – it is a teaching example.
+    """
+    # Load data
+    pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
+        uploaded_files, start_date, end_date
+    )
+    n = len(master_index)
+
+    # Process only the first pair (e.g., EURUSD) for simplicity
+    if not pair_names:
+        return None, None, None
+    pair_name = pair_names[0]
+    bid_array = bid_arrays[pair_name]
+    ask_array = ask_arrays[pair_name]
+    close = bid_array[:, 3]  # close prices (BID close)
+
+    # Compute MAs
+    ma_fast = pd.Series(close).rolling(5).mean().values
+    ma_slow = pd.Series(close).rolling(20).mean().values
+
+    balance_cents = float(STARTING_BALANCE_CENTS)
+    trades_log = []
+    monthly_details = []
+
+    current_month = None
+    month_start_balance = balance_cents
+    month_peak = balance_cents
+    month_max_dd_cents = 0
+    monthly_pnl_list = []
+    monthly_max_dd_list = []
+
+    pip_size = get_pip_size(get_pair_currencies(pair_name)[1])
+    point_size = pip_size / 10.0
+
+    for i in range(20, n - 1):
+        ts = master_index[i]
+        month_key = ts.strftime('%Y-%m')
+        if current_month is None:
+            current_month = month_key
+            month_start_balance = balance_cents
+            month_peak = balance_cents
+            month_max_dd_cents = 0
+
+        # Crossover detection
+        buy_signal = ma_fast[i] > ma_slow[i] and ma_fast[i-1] <= ma_slow[i-1]
+        sell_signal = ma_fast[i] < ma_slow[i] and ma_fast[i-1] >= ma_slow[i-1]
+
+        if buy_signal:
+            entry_price = ask_array[i][3]  # ask close
+            sl_price = entry_price - 20 * pip_size
+            tp_price = entry_price + 40 * pip_size
+            cmd = 'BUY'
+            risk_pips = 20
+            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
+            if pip_val is None:
+                continue
+            risk_cents_per_lot = risk_pips * pip_val * 100
+            lot = risk_cents / risk_cents_per_lot
+
+            # Simulate exit after 1 bar (simplistic)
+            exit_price = close[i+1]
+            pnl_cents = ((exit_price - entry_price) / pip_size) * pip_val * 100 * lot
+            balance_cents += pnl_cents
+            trades_log.append({
+                'pair': pair_name, 'type': cmd, 'entry_bar': i, 'exit_bar': i+1,
+                'entry': entry_price, 'exit': exit_price, 'reason': 'TP/SL',
+                'pnl_cents': pnl_cents, 'lot': lot, 'risk_pips': risk_pips,
+                'be_set': False, 'balance_after': balance_cents, 'year': ts.year,
+            })
+            if balance_cents > month_peak:
+                month_peak = balance_cents
+            dd = month_peak - balance_cents
+            if dd > month_max_dd_cents:
+                month_max_dd_cents = dd
+
+        elif sell_signal:
+            entry_price = bid_array[i][3]  # bid close
+            sl_price = entry_price + 20 * pip_size
+            tp_price = entry_price - 40 * pip_size
+            cmd = 'SELL'
+            risk_pips = 20
+            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
+            if pip_val is None:
+                continue
+            risk_cents_per_lot = risk_pips * pip_val * 100
+            lot = risk_cents / risk_cents_per_lot
+
+            exit_price = close[i+1]
+            pnl_cents = ((entry_price - exit_price) / pip_size) * pip_val * 100 * lot
+            balance_cents += pnl_cents
+            trades_log.append({
+                'pair': pair_name, 'type': cmd, 'entry_bar': i, 'exit_bar': i+1,
+                'entry': entry_price, 'exit': exit_price, 'reason': 'TP/SL',
+                'pnl_cents': pnl_cents, 'lot': lot, 'risk_pips': risk_pips,
+                'be_set': False, 'balance_after': balance_cents, 'year': ts.year,
+            })
+            if balance_cents > month_peak:
+                month_peak = balance_cents
+            dd = month_peak - balance_cents
+            if dd > month_max_dd_cents:
+                month_max_dd_cents = dd
+
+        # End of month
+        if current_month != month_key:
+            month_pnl = balance_cents - month_start_balance
+            monthly_pnl_list.append(month_pnl)
+            monthly_max_dd_list.append(month_max_dd_cents)
+            monthly_details.append({
+                'Month': month_key,
+                'Starting Balance (cents)': month_start_balance,
+                'Monthly P&L (cents)': month_pnl,
+                'Withdrawal %': 0,
+                'Withdrawn (cents)': 0,
+                'Remaining P&L (cents)': month_pnl,
+                'Balance After (cents)': balance_cents,
+            })
+            current_month = month_key
+            month_start_balance = balance_cents
+            month_peak = balance_cents
+            month_max_dd_cents = 0
+
+    # Final month
+    if current_month is not None:
+        month_pnl = balance_cents - month_start_balance
+        monthly_pnl_list.append(month_pnl)
+        monthly_max_dd_list.append(month_max_dd_cents)
+
+    max_dd_cents = max(monthly_max_dd_list) if monthly_max_dd_list else 0
+    max_dd_pct = (max_dd_cents / STARTING_BALANCE_CENTS) * 100
+
+    df_trades = pd.DataFrame(trades_log)
+    if len(df_trades) == 0:
+        return None, None, None
+
+    wins = df_trades[df_trades['pnl_cents'] > 0]['pnl_cents']
+    losses = df_trades[df_trades['pnl_cents'] < 0]['pnl_cents']
+    pf = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
+    win_rate = (df_trades['pnl_cents'] > 0).mean() * 100
+    total_withdrawn_usd = 0  # demo strategy does not withdraw
+
+    results = {
+        'total_trades': len(df_trades),
+        'win_rate': win_rate,
+        'profit_factor': pf,
+        'total_withdrawn_usd': total_withdrawn_usd,
+        'avg_monthly_usd': total_withdrawn_usd / len(monthly_pnl_list) if monthly_pnl_list else 0,
+        'max_dd_cents': max_dd_cents,
+        'max_dd_percent': max_dd_pct,
+    }
+    return results, df_trades, monthly_details
