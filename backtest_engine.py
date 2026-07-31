@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from datetime import timedelta
+import io
 
 # --------------------------------------------------------------
 # Global settings (default values, can be overridden)
@@ -94,15 +95,27 @@ def get_pip_value(pair_name, quote, price, timestamp, ref_prices, mode='static')
         return get_pip_value_usd_static(quote, price)
     return get_pip_value_usd_triangulated(pair_name, price, timestamp, ref_prices)
 
-def load_all_data(base_dir, start_date=None, end_date=None):
-    all_files = [f for f in os.listdir(base_dir) if f.lower().endswith('.csv')]
+# --------------------------------------------------------------
+# Data loading from uploaded files
+# --------------------------------------------------------------
+def load_uploaded_data(uploaded_files, start_date=None, end_date=None):
+    """
+    uploaded_files: dict {filename: UploadedFile object} from Streamlit
+    Returns: pair_names, master_index, bid_arrays, ask_arrays, ref_prices
+    """
+    all_files = list(uploaded_files.keys())
     pairs = pair_files(all_files)
     if not pairs:
-        raise RuntimeError("No paired files found.")
+        raise RuntimeError("No paired BID/ASK files found. Make sure you upload both BID and ASK files.")
+
     bid_dfs, ask_dfs = {}, {}
     for bid_file, ask_file, pair_name in pairs:
-        df_bid = pd.read_csv(os.path.join(base_dir, bid_file))
-        df_ask = pd.read_csv(os.path.join(base_dir, ask_file))
+        # Read CSV from uploaded file objects
+        bid_content = uploaded_files[bid_file].read()
+        ask_content = uploaded_files[ask_file].read()
+        df_bid = pd.read_csv(io.BytesIO(bid_content))
+        df_ask = pd.read_csv(io.BytesIO(ask_content))
+
         for df in (df_bid, df_ask):
             if 'timestamp' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -117,16 +130,19 @@ def load_all_data(base_dir, start_date=None, end_date=None):
         bid_dfs[pair_name] = df_bid[['open', 'high', 'low', 'close']]
         ask_dfs[pair_name] = df_ask[['open', 'high', 'low', 'close']]
 
+    # Create master index
     master_index = None
     for df in bid_dfs.values():
         master_index = df.index if master_index is None else master_index.union(df.index)
     master_index = master_index.sort_values()
 
+    # Handle timezone
     if master_index.tz is None:
         master_index = master_index.tz_localize('UTC')
     else:
         master_index = master_index.tz_convert('UTC')
 
+    # Apply date filter
     if start_date is not None:
         start_dt = pd.to_datetime(start_date).tz_localize('UTC')
         master_index = master_index[master_index >= start_dt]
@@ -137,6 +153,7 @@ def load_all_data(base_dir, start_date=None, end_date=None):
     if len(master_index) == 0:
         raise RuntimeError("No data in the selected date range.")
 
+    # Reindex arrays
     bid_arrays, ask_arrays = {}, {}
     for pair_name in bid_dfs:
         bid_arrays[pair_name] = bid_dfs[pair_name].reindex(master_index).to_numpy(dtype=np.float64)
@@ -161,13 +178,12 @@ def get_spread_pips(pair_name, bid_price, ask_price):
     return spread_pips, limit_pips
 
 # --------------------------------------------------------------
-# Core simulation function (single period)
+# Core simulation (accepts already loaded arrays)
 # --------------------------------------------------------------
-def run_backtest(base_dir, risk_cents=RISK_CENTS,
-                 withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
-                 withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
-                 start_date=None, end_date=None):
-    pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_all_data(base_dir, start_date, end_date)
+def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
+                             risk_cents=RISK_CENTS,
+                             withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
+                             withdrawal_pct_rest=WITHDRAWAL_PCT_REST):
     n = len(master_index)
 
     pip_sizes = {p: get_pip_size(get_pair_currencies(p)[1]) for p in pair_names}
@@ -446,7 +462,7 @@ def run_backtest(base_dir, risk_cents=RISK_CENTS,
 
     df_trades = pd.DataFrame(trades_log)
     if len(df_trades) == 0:
-        return None, None
+        return None, None, None
 
     wins = df_trades[df_trades['pnl_cents'] > 0]['pnl_cents']
     losses = df_trades[df_trades['pnl_cents'] < 0]['pnl_cents']
@@ -467,35 +483,42 @@ def run_backtest(base_dir, risk_cents=RISK_CENTS,
     return results, df_trades, monthly_details
 
 # --------------------------------------------------------------
-# WALK-FORWARD VALIDATION
+# Public functions for the web app
 # --------------------------------------------------------------
-def run_wfv(base_dir, risk_cents=RISK_CENTS,
-            withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
-            withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
-            blocks=None):
-    """
-    Runs Walk-Forward Validation on predefined 5‑year blocks.
-    blocks: list of (label, start_year, end_year)
-    """
-    if blocks is None:
-        blocks = [
-            ('2005-2009', 2005, 2009),
-            ('2010-2014', 2010, 2014),
-            ('2015-2019', 2015, 2019),
-            ('2020-2024', 2020, 2024),
-        ]
+def run_backtest_from_files(uploaded_files, risk_cents=RISK_CENTS,
+                            withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
+                            withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
+                            start_date=None, end_date=None):
+    try:
+        pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
+            uploaded_files, start_date, end_date
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to load data: {e}")
+    return run_simulation_on_arrays(
+        pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
+        risk_cents, withdrawal_pct_first, withdrawal_pct_rest
+    )
 
+def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
+                       withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
+                       withdrawal_pct_rest=WITHDRAWAL_PCT_REST):
+    blocks = [
+        ('2005-2009', 2005, 2009),
+        ('2010-2014', 2010, 2014),
+        ('2015-2019', 2015, 2019),
+        ('2020-2024', 2020, 2024),
+    ]
     block_results = []
-    combined_trades = []
+    combined_trades = 0
     combined_withdrawn_usd = 0
     combined_months = 0
 
     for label, start_year, end_year in blocks:
-        # Define date range for the block
         start_date = f"{start_year}-01-01"
         end_date = f"{end_year}-12-31"
-        results, _, _ = run_backtest(
-            base_dir,
+        results, _, _ = run_backtest_from_files(
+            uploaded_files,
             risk_cents=risk_cents,
             withdrawal_pct_first=withdrawal_pct_first,
             withdrawal_pct_rest=withdrawal_pct_rest,
@@ -513,9 +536,9 @@ def run_wfv(base_dir, risk_cents=RISK_CENTS,
                 'Max DD (cents)': results['max_dd_cents'],
                 'Max DD (%)': results['max_dd_percent'],
             })
-            combined_trades.append(results['total_trades'])
+            combined_trades += results['total_trades']
             combined_withdrawn_usd += results['total_withdrawn_usd']
-            combined_months += 60  # assume each block has 60 months
+            combined_months += 60
         else:
             block_results.append({
                 'Block': label,
@@ -528,33 +551,14 @@ def run_wfv(base_dir, risk_cents=RISK_CENTS,
                 'Max DD (%)': 0,
             })
 
-    overall_trades = sum(combined_trades)
-    overall_withdrawn_usd = combined_withdrawn_usd
-    overall_avg_monthly = overall_withdrawn_usd / combined_months if combined_months > 0 else 0
-
-    # Combine into a summary dict
     summary = {
-        'Overall Trades': overall_trades,
-        'Total Withdrawn (USD)': overall_withdrawn_usd,
-        'Average Monthly (USD)': overall_avg_monthly,
+        'Overall Trades': combined_trades,
+        'Total Withdrawn (USD)': combined_withdrawn_usd,
+        'Average Monthly (USD)': combined_withdrawn_usd / combined_months if combined_months > 0 else 0,
     }
-
     return block_results, summary
 
 # --------------------------------------------------------------
-# Example usage (if run as main script)
+# (Optional) For local testing – you can keep the old folder-based versions
+# but they are not required for the web app.
 # --------------------------------------------------------------
-if __name__ == "__main__":
-    data_folder = r'C:\BRE\data'
-    # Quick test on a single period
-    results, _, _ = run_backtest(data_folder, risk_cents=70,
-                                 start_date="2023-01-01", end_date="2025-01-01")
-    if results:
-        print("Single backtest results:", results)
-
-    # WFV test
-    block_results, summary = run_wfv(data_folder, risk_cents=70)
-    print("\nWFV Block Results:")
-    for b in block_results:
-        print(b)
-    print("\nWFV Summary:", summary)
