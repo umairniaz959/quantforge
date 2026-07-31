@@ -6,21 +6,68 @@ import datetime
 from backtest_engine import run_backtest_from_files, run_wfv_from_files
 
 st.set_page_config(page_title="QuantForge – Backtest Engine", layout="wide")
+
+# ============================================================
+# SESSION STATE INITIALIZATION (for presets)
+# ============================================================
+if "risk_cents" not in st.session_state:
+    st.session_state.risk_cents = 70
+if "withdrawal_pct_first" not in st.session_state:
+    st.session_state.withdrawal_pct_first = 70
+if "withdrawal_pct_rest" not in st.session_state:
+    st.session_state.withdrawal_pct_rest = 100
+if "start_date" not in st.session_state:
+    st.session_state.start_date = pd.to_datetime("2023-01-01")
+if "end_date" not in st.session_state:
+    st.session_state.end_date = pd.to_datetime("2025-01-01")
+
+# ============================================================
+# HEADER
+# ============================================================
 st.title("🚀 QuantForge – Backtest Engine")
 st.markdown("Upload your CSV data, define parameters, and get AI‑powered analysis.")
 
 # --------------------------------------------------------------
-# Sidebar – common parameters
+# SIDEBAR – PRESETS
 # --------------------------------------------------------------
-st.sidebar.header("Common Parameters")
-risk_cents = st.sidebar.number_input("Risk per Trade (cents)", min_value=1, value=70)
-withdrawal_pct_first = st.sidebar.slider("Withdrawal % – First Year", 0, 100, 70)
-withdrawal_pct_rest = st.sidebar.slider("Withdrawal % – Rest", 0, 100, 100)
+st.sidebar.header("⚡ Presets")
+if st.sidebar.button("🎯 Load Demo Preset (QuantForge Validated)"):
+    st.session_state.risk_cents = 70
+    st.session_state.withdrawal_pct_first = 70
+    st.session_state.withdrawal_pct_rest = 100
+    st.session_state.start_date = pd.to_datetime("2023-01-01")
+    st.session_state.end_date = pd.to_datetime("2025-01-01")
+    st.rerun()
 
 st.sidebar.markdown("---")
 
 # --------------------------------------------------------------
-# File Upload
+# SIDEBAR – COMMON PARAMETERS
+# --------------------------------------------------------------
+st.sidebar.header("Common Parameters")
+risk_cents = st.sidebar.number_input(
+    "Risk per Trade (cents)",
+    min_value=1,
+    value=st.session_state.risk_cents,
+    key="risk_cents"
+)
+withdrawal_pct_first = st.sidebar.slider(
+    "Withdrawal % – First Year",
+    0, 100,
+    st.session_state.withdrawal_pct_first,
+    key="withdrawal_pct_first"
+)
+withdrawal_pct_rest = st.sidebar.slider(
+    "Withdrawal % – Rest",
+    0, 100,
+    st.session_state.withdrawal_pct_rest,
+    key="withdrawal_pct_rest"
+)
+
+st.sidebar.markdown("---")
+
+# --------------------------------------------------------------
+# SIDEBAR – FILE UPLOAD
 # --------------------------------------------------------------
 st.sidebar.subheader("Upload Data")
 uploaded_files = st.sidebar.file_uploader(
@@ -42,13 +89,15 @@ for file in uploaded_files:
 
 st.sidebar.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
 
+st.sidebar.markdown("---")
+
 # --------------------------------------------------------------
-# EA Export (truncated – use your full EA code)
+# SIDEBAR – EA EXPORT
 # --------------------------------------------------------------
 st.sidebar.subheader("EA Export")
 ea_magic = st.sidebar.number_input("Magic Number", value=123457, step=1)
 if st.sidebar.button("Download EA (MQL4)"):
-    ea_code = "// Your EA code here"
+    ea_code = "// Your full EA code here (truncated for brevity)"
     st.download_button(
         label="Download EA (MQL4)",
         data=ea_code,
@@ -59,11 +108,19 @@ if st.sidebar.button("Download EA (MQL4)"):
 st.sidebar.markdown("---")
 
 # --------------------------------------------------------------
-# SINGLE BACKTEST
+# SIDEBAR – SINGLE BACKTEST
 # --------------------------------------------------------------
 st.sidebar.subheader("Single Backtest")
-start_date = st.sidebar.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
-end_date = st.sidebar.date_input("End Date", value=pd.to_datetime("2025-01-01"))
+start_date = st.sidebar.date_input(
+    "Start Date",
+    value=st.session_state.start_date,
+    key="start_date"
+)
+end_date = st.sidebar.date_input(
+    "End Date",
+    value=st.session_state.end_date,
+    key="end_date"
+)
 
 if st.sidebar.button("Run Single Backtest"):
     if len(st.session_state.uploaded_data) == 0:
@@ -89,33 +146,30 @@ if st.sidebar.button("Run Single Backtest"):
                     col3.metric("Profit Factor", f"{results['profit_factor']:.2f}")
                     col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
-                    # --------------------------------------------------
-                    # EQUITY CURVE AND DRAWDOWN (from trade log)
-                    # --------------------------------------------------
+                    # ---- EQUITY CURVE & DRAWDOWN ----
                     if trades_df is not None and not trades_df.empty:
-                        # Sort trades by exit_bar to build equity curve
                         df_trades = trades_df.sort_values('exit_bar')
-                        # Cumulative P&L in USD
                         df_trades['Cumulative P&L (USD)'] = (df_trades['pnl_cents'].cumsum() / 100.0)
-                        # Compute drawdown in USD (peak - current)
                         df_trades['Drawdown (USD)'] = df_trades['Cumulative P&L (USD)'].cummax() - df_trades['Cumulative P&L (USD)']
-
-                        # Get the maximum drawdown from the trade curve
                         max_dd_from_curve = df_trades['Drawdown (USD)'].max()
                         st.caption(f"Max Drawdown from trade curve: **${max_dd_from_curve:.2f}**")
 
-                        # Create figure
+                        if 'exit_date' in df_trades.columns:
+                            x_vals = pd.to_datetime(df_trades['exit_date'])
+                            x_title = "Date"
+                        else:
+                            x_vals = df_trades['exit_bar']
+                            x_title = "Trade Sequence"
+
                         fig = make_subplots(
                             rows=2, cols=1,
                             shared_xaxes=True,
                             vertical_spacing=0.1,
                             subplot_titles=("Equity Curve (USD)", "Drawdown (USD)")
                         )
-
-                        # Equity curve (use exit_bar as index)
                         fig.add_trace(
                             go.Scatter(
-                                x=df_trades['exit_bar'],
+                                x=x_vals,
                                 y=df_trades['Cumulative P&L (USD)'],
                                 mode='lines',
                                 name='Equity Curve',
@@ -123,43 +177,28 @@ if st.sidebar.button("Run Single Backtest"):
                             ),
                             row=1, col=1
                         )
-
-                        # Drawdown bars
                         fig.add_trace(
                             go.Bar(
-                                x=df_trades['exit_bar'],
+                                x=x_vals,
                                 y=df_trades['Drawdown (USD)'],
                                 name='Drawdown',
                                 marker_color='red',
                             ),
                             row=2, col=1
                         )
-
-                        # Fix y‑axis: start at 0, go slightly above max
                         if max_dd_from_curve > 0:
-                            fig.update_yaxes(
-                                row=2, col=1,
-                                range=[0, max_dd_from_curve * 1.1],
-                                title_text="Drawdown (USD)",
-                                tickformat="$.2f"
-                            )
+                            fig.update_yaxes(row=2, col=1, range=[0, max_dd_from_curve * 1.1], title_text="Drawdown (USD)", tickformat="$.2f")
                         else:
                             fig.update_yaxes(row=2, col=1, range=[0, 1], title_text="Drawdown (USD)", tickformat="$.2f")
-
-                        # Horizontal line at max drawdown
                         if max_dd_from_curve > 0:
                             fig.add_hline(y=max_dd_from_curve, line_dash="dash", line_color="orange", row=2, col=1,
                                           annotation_text=f"Max DD: ${max_dd_from_curve:.2f}")
-
-                        fig.update_layout(height=700, showlegend=False)
+                        fig.update_layout(height=700, showlegend=False, xaxis_title=x_title)
                         st.plotly_chart(fig, use_container_width=True)
-
                     else:
-                        st.info("No trade log available to plot equity curve.")
+                        st.info("No trade log available.")
 
-                    # --------------------------------------------------
-                    # METRICS AND TABLES
-                    # --------------------------------------------------
+                    # ---- METRICS ----
                     st.subheader("Detailed Metrics")
                     st.dataframe(pd.DataFrame([results]).T.rename(columns={0: "Value"}))
 
@@ -177,9 +216,7 @@ if st.sidebar.button("Run Single Backtest"):
                         csv = trades_df.to_csv(index=False).encode('utf-8')
                         st.download_button("Download Trade Log (CSV)", csv, "trade_log.csv", "text/csv")
 
-                    # --------------------------------------------------
-                    # GENERATE REPORT (HTML)
-                    # --------------------------------------------------
+                    # ---- REPORT ----
                     st.sidebar.subheader("Report Export")
                     if st.sidebar.button("Generate Report (HTML)"):
                         html_content = f"""
@@ -212,7 +249,7 @@ if st.sidebar.button("Run Single Backtest"):
 st.sidebar.markdown("---")
 
 # --------------------------------------------------------------
-# WFV
+# SIDEBAR – WFV
 # --------------------------------------------------------------
 st.sidebar.subheader("Walk-Forward Validation (WFV)")
 st.sidebar.caption("Runs on the standard 4 blocks: 2005-2009, 2010-2014, 2015-2019, 2020-2024")
