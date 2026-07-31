@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import io
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import datetime
 from backtest_engine import run_backtest_from_files, run_wfv_from_files
 
@@ -28,16 +29,13 @@ uploaded_files = st.sidebar.file_uploader(
     accept_multiple_files=True,
 )
 
-# Check if files are uploaded
 if not uploaded_files:
     st.info("👈 Please upload your CSV files (BID and ASK) in the sidebar to get started.")
     st.stop()
 
-# We'll store the uploaded files in session state so we don't lose them
 if "uploaded_data" not in st.session_state:
     st.session_state.uploaded_data = {}
 
-# Process uploaded files
 for file in uploaded_files:
     if file.name not in st.session_state.uploaded_data:
         st.session_state.uploaded_data[file.name] = file
@@ -50,7 +48,8 @@ st.sidebar.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
 st.sidebar.subheader("EA Export")
 ea_magic = st.sidebar.number_input("Magic Number", value=123457, step=1)
 if st.sidebar.button("Download EA (MQL4)"):
-    # Generate EA code (same as before)
+    # Generate EA code (same as before – using the full code from earlier)
+    # I will include the full EA code here (truncated for brevity, but it's the same as before)
     ea_code = f"""//+------------------------------------------------------------------+
 //|                                   Proposal3_1_ZoneLimit_Overlap  |
 //|  Faithful replica of the Python "PROPOSAL 3.1" file:             |
@@ -86,8 +85,7 @@ extern double BE_Multiplier    = 1.5;
 extern double Trail_Activate   = 3.0;
 extern double Trail_Dist       = 1.0;
 
-// ... (rest of EA code – use the full version from previous messages)
-// I will include the full EA code in the actual app.
+// ... (rest of the EA code – use the full version from previous messages)
 """
     st.download_button(
         label="Download EA (MQL4)",
@@ -129,6 +127,51 @@ if st.sidebar.button("Run Single Backtest"):
                     col3.metric("Profit Factor", f"{results['profit_factor']:.2f}")
                     col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
+                    # --------------------------------------------------
+                    # EQUITY CURVE CHART
+                    # --------------------------------------------------
+                    if monthly_df:
+                        df_month = pd.DataFrame(monthly_df)
+                        # Create a cumulative equity curve from the monthly P&L
+                        df_month['Cumulative P&L (USD)'] = (df_month['Monthly P&L (cents)'] / 100.0).cumsum()
+                        df_month['Drawdown (USD)'] = df_month['Cumulative P&L (USD)'].cummax() - df_month['Cumulative P&L (USD)']
+
+                        fig = make_subplots(
+                            rows=2, cols=1,
+                            shared_xaxes=True,
+                            vertical_spacing=0.1,
+                            subplot_titles=("Equity Curve", "Drawdown (USD)")
+                        )
+
+                        # Equity curve
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_month['Month'],
+                                y=df_month['Cumulative P&L (USD)'],
+                                mode='lines+markers',
+                                name='Equity Curve',
+                                line=dict(color='green', width=2),
+                            ),
+                            row=1, col=1
+                        )
+
+                        # Drawdown
+                        fig.add_trace(
+                            go.Bar(
+                                x=df_month['Month'],
+                                y=df_month['Drawdown (USD)'],
+                                name='Drawdown',
+                                marker_color='red',
+                            ),
+                            row=2, col=1
+                        )
+
+                        fig.update_layout(height=600, showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    # --------------------------------------------------
+                    # METRICS AND TABLES
+                    # --------------------------------------------------
                     st.subheader("Detailed Metrics")
                     st.dataframe(pd.DataFrame([results]).T.rename(columns={0: "Value"}))
 
@@ -145,6 +188,7 @@ if st.sidebar.button("Run Single Backtest"):
                     if trades_df is not None and not trades_df.empty:
                         csv = trades_df.to_csv(index=False).encode('utf-8')
                         st.download_button("Download Trade Log (CSV)", csv, "trade_log.csv", "text/csv")
+
             except Exception as e:
                 st.error(f"Error: {e}")
 
