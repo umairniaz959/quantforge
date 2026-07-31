@@ -1,5 +1,6 @@
 streamlit
+streamlit-authenticator
+sqlalchemy
 pandas
 numpy
 plotly
-openai
