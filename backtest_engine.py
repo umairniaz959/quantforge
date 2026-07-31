@@ -560,7 +560,8 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
 # DEMO STRATEGY (Moving Average Crossover – for demonstration only)
 # --------------------------------------------------------------
 def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
-                      start_date=None, end_date=None):
+                      start_date=None, end_date=None,
+                      demo_sl=20, demo_tp=40):
     """
     A simple MA crossover strategy for demo purposes.
     This is NOT the validated strategy – it is a teaching example.
@@ -612,10 +613,11 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
 
         if buy_signal:
             entry_price = ask_array[i][3]  # ask close
-            sl_price = entry_price - 20 * pip_size
-            tp_price = entry_price + 40 * pip_size
+            # Use demo SL/TP
+            sl_price = entry_price - demo_sl * pip_size
+            tp_price = entry_price + demo_tp * pip_size
             cmd = 'BUY'
-            risk_pips = 20
+            risk_pips = demo_sl
             pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
             if pip_val is None:
                 continue
@@ -640,10 +642,10 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
 
         elif sell_signal:
             entry_price = bid_array[i][3]  # bid close
-            sl_price = entry_price + 20 * pip_size
-            tp_price = entry_price - 40 * pip_size
+            sl_price = entry_price + demo_sl * pip_size
+            tp_price = entry_price - demo_tp * pip_size
             cmd = 'SELL'
-            risk_pips = 20
+            risk_pips = demo_sl
             pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
             if pip_val is None:
                 continue
