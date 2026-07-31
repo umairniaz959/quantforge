@@ -22,6 +22,10 @@ if "end_date" not in st.session_state:
     st.session_state.end_date = pd.to_datetime("2025-01-01")
 if "demo_mode" not in st.session_state:
     st.session_state.demo_mode = False
+if "demo_sl" not in st.session_state:
+    st.session_state.demo_sl = 20
+if "demo_tp" not in st.session_state:
+    st.session_state.demo_tp = 40
 
 # ============================================================
 # HEADER
@@ -30,7 +34,7 @@ st.title("🚀 QuantForge – Backtest Engine")
 st.markdown("Upload your CSV data, define parameters, and get AI‑powered analysis.")
 
 # --------------------------------------------------------------
-# DEMO MODE BANNER (appears when demo mode is active)
+# DEMO MODE BANNER
 # --------------------------------------------------------------
 if st.session_state.demo_mode:
     st.info("📂 **Demo Mode Active** – please upload your CSV files and set your parameters.")
@@ -46,6 +50,8 @@ if st.sidebar.button("🎯 Load Demo Preset (MA Crossover)"):
     st.session_state.start_date = pd.to_datetime("2023-01-01")
     st.session_state.end_date = pd.to_datetime("2025-01-01")
     st.session_state.demo_mode = True
+    st.session_state.demo_sl = 20
+    st.session_state.demo_tp = 40
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -82,6 +88,32 @@ withdrawal_pct_rest = st.sidebar.slider(
     st.session_state.withdrawal_pct_rest,
     key="withdrawal_pct_rest"
 )
+
+st.sidebar.markdown("---")
+
+# --------------------------------------------------------------
+# DEMO STRATEGY PARAMETERS (only appear in demo mode)
+# --------------------------------------------------------------
+if st.session_state.demo_mode:
+    st.sidebar.subheader("Demo Strategy Parameters")
+    demo_sl = st.sidebar.number_input(
+        "Stop Loss (pips)",
+        min_value=1,
+        value=st.session_state.demo_sl,
+        step=1,
+        key="demo_sl"
+    )
+    demo_tp = st.sidebar.number_input(
+        "Take Profit (pips)",
+        min_value=1,
+        value=st.session_state.demo_tp,
+        step=1,
+        key="demo_tp"
+    )
+    st.sidebar.caption("MA Crossover with fixed SL/TP.")
+else:
+    # When not in demo mode, we don't show these parameters
+    pass
 
 st.sidebar.markdown("---")
 
@@ -149,11 +181,14 @@ if st.sidebar.button("Run Single Backtest"):
             try:
                 # Check demo mode
                 if st.session_state.demo_mode:
+                    # Pass demo SL/TP to the demo function
                     results, trades_df, monthly_df = run_demo_backtest(
                         st.session_state.uploaded_data,
                         risk_cents=risk_cents,
                         start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
                         end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
+                        demo_sl=demo_sl,
+                        demo_tp=demo_tp
                     )
                     st.info("ℹ️ Demo backtest complete.")
                 else:
@@ -170,6 +205,7 @@ if st.sidebar.button("Run Single Backtest"):
                     st.warning("No trades in the selected period.")
                 else:
                     st.success("Backtest complete!")
+                    # ... (rest of the display logic remains unchanged) ...
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Total Trades", results['total_trades'])
                     col2.metric("Win Rate", f"{results['win_rate']:.1f}%")
