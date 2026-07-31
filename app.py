@@ -48,8 +48,7 @@ st.sidebar.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
 st.sidebar.subheader("EA Export")
 ea_magic = st.sidebar.number_input("Magic Number", value=123457, step=1)
 if st.sidebar.button("Download EA (MQL4)"):
-    # EA code generation – using the full code from previous versions
-    # (I will include the full EA code here – truncated for brevity in this response)
+    # (EA code – same as before, truncated for brevity)
     ea_code = f"""//+------------------------------------------------------------------+
 //|                                   Proposal3_1_ZoneLimit_Overlap  |
 //|  Faithful replica of the Python "PROPOSAL 3.1" file:             |
@@ -128,17 +127,21 @@ if st.sidebar.button("Run Single Backtest"):
                     col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
                     # --------------------------------------------------
-                    # EQUITY CURVE CHART (with fixed drawdown scaling)
+                    # EQUITY CURVE AND DRAWDOWN (with debugging)
                     # --------------------------------------------------
                     if monthly_df:
                         df_month = pd.DataFrame(monthly_df)
-                        # Cumulative P&L in USD
+                        # Convert to USD (if not already)
                         df_month['Cumulative P&L (USD)'] = (df_month['Monthly P&L (cents)'] / 100.0).cumsum()
-                        # Drawdown in USD (peak - current)
                         df_month['Drawdown (USD)'] = df_month['Cumulative P&L (USD)'].cummax() - df_month['Cumulative P&L (USD)']
-                        max_dd_from_chart = df_month['Drawdown (USD)'].max()
 
-                        # Subplots: equity curve and drawdown
+                        # Display the actual drawdown values for debugging
+                        with st.expander("Debug: Monthly Drawdown Values (USD)"):
+                            st.dataframe(df_month[['Month', 'Drawdown (USD)']])
+
+                        max_dd = df_month['Drawdown (USD)'].max()
+                        st.caption(f"Max Drawdown from chart data: **${max_dd:.2f}**")
+
                         fig = make_subplots(
                             rows=2, cols=1,
                             shared_xaxes=True,
@@ -158,7 +161,7 @@ if st.sidebar.button("Run Single Backtest"):
                             row=1, col=1
                         )
 
-                        # Drawdown bars (positive values)
+                        # Drawdown bars
                         fig.add_trace(
                             go.Bar(
                                 x=df_month['Month'],
@@ -169,27 +172,25 @@ if st.sidebar.button("Run Single Backtest"):
                             row=2, col=1
                         )
 
-                        # Fix drawdown y‑axis: start at 0 and go slightly above max
-                        max_dd = df_month['Drawdown (USD)'].max()
+                        # Fix y‑axis: start at 0, go slightly above max
                         if max_dd > 0:
                             fig.update_yaxes(
                                 row=2, col=1,
                                 range=[0, max_dd * 1.1],
-                                title_text="Drawdown (USD)"
+                                title_text="Drawdown (USD)",
+                                tickprefix="$",
+                                tickformat=".2f"
                             )
                         else:
-                            fig.update_yaxes(row=2, col=1, range=[0, 1], title_text="Drawdown (USD)")
+                            fig.update_yaxes(row=2, col=1, range=[0, 1], title_text="Drawdown (USD)", tickprefix="$", tickformat=".2f")
 
-                        # Add a horizontal line at the max drawdown value (optional)
+                        # Horizontal line at max drawdown
                         if max_dd > 0:
                             fig.add_hline(y=max_dd, line_dash="dash", line_color="orange", row=2, col=1,
                                           annotation_text=f"Max DD: ${max_dd:.2f}")
 
                         fig.update_layout(height=700, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
-
-                        # Also show the max drawdown from the chart for verification
-                        st.caption(f"Max Drawdown from chart: ${max_dd_from_chart:.2f}")
 
                     # --------------------------------------------------
                     # METRICS AND TABLES
@@ -211,6 +212,35 @@ if st.sidebar.button("Run Single Backtest"):
                         csv = trades_df.to_csv(index=False).encode('utf-8')
                         st.download_button("Download Trade Log (CSV)", csv, "trade_log.csv", "text/csv")
 
+                    # --------------------------------------------------
+                    # GENERATE REPORT (HTML)
+                    # --------------------------------------------------
+                    st.sidebar.subheader("Report Export")
+                    if st.sidebar.button("Generate Report (HTML)"):
+                        # Build HTML report (same as before)
+                        # I'll include a simple version here
+                        html_content = f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head><meta charset="UTF-8"><title>QuantForge Report</title>
+                        <style>body {{ font-family: Arial; margin: 40px; }}</style>
+                        </head>
+                        <body>
+                        <h1>QuantForge Backtest Report</h1>
+                        <p><strong>Risk:</strong> {risk_cents} cents</p>
+                        <p><strong>Period:</strong> {start_date} to {end_date}</p>
+                        <h2>Summary</h2>
+                        <p>Total Trades: {results['total_trades']}</p>
+                        <p>Win Rate: {results['win_rate']:.1f}%</p>
+                        <p>Profit Factor: {results['profit_factor']:.2f}</p>
+                        <p>Total Withdrawn: ${results['total_withdrawn_usd']:.2f}</p>
+                        <p>Avg Monthly: ${results['avg_monthly_usd']:.2f}</p>
+                        <p>Max DD: ${results['max_dd_cents']/100:.2f}</p>
+                        </body>
+                        </html>
+                        """
+                        st.download_button("Download Report (HTML)", data=html_content,
+                                           file_name="quantforge_report.html", mime="text/html")
             except Exception as e:
                 st.error(f"Error: {e}")
 
