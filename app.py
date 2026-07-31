@@ -43,13 +43,12 @@ for file in uploaded_files:
 st.sidebar.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
 
 # --------------------------------------------------------------
-# EA Export
+# EA Export (truncated – use your full EA code)
 # --------------------------------------------------------------
 st.sidebar.subheader("EA Export")
 ea_magic = st.sidebar.number_input("Magic Number", value=123457, step=1)
 if st.sidebar.button("Download EA (MQL4)"):
-    # Full EA code – use the same as before (truncated here for brevity)
-    ea_code = "// EA code from previous version"
+    ea_code = "// Your EA code here"
     st.download_button(
         label="Download EA (MQL4)",
         data=ea_code,
@@ -91,23 +90,21 @@ if st.sidebar.button("Run Single Backtest"):
                     col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
                     # --------------------------------------------------
-                    # EQUITY CURVE AND DRAWDOWN (with fixed scaling)
+                    # EQUITY CURVE AND DRAWDOWN (from trade log)
                     # --------------------------------------------------
-                    if monthly_df:
-                        df_month = pd.DataFrame(monthly_df)
+                    if trades_df is not None and not trades_df.empty:
+                        # Sort trades by exit_bar to build equity curve
+                        df_trades = trades_df.sort_values('exit_bar')
                         # Cumulative P&L in USD
-                        df_month['Cumulative P&L (USD)'] = (df_month['Monthly P&L (cents)'] / 100.0).cumsum()
-                        # Drawdown in USD (peak - current)
-                        df_month['Drawdown (USD)'] = df_month['Cumulative P&L (USD)'].cummax() - df_month['Cumulative P&L (USD)']
+                        df_trades['Cumulative P&L (USD)'] = (df_trades['pnl_cents'].cumsum() / 100.0)
+                        # Compute drawdown in USD (peak - current)
+                        df_trades['Drawdown (USD)'] = df_trades['Cumulative P&L (USD)'].cummax() - df_trades['Cumulative P&L (USD)']
 
-                        # Debug expander
-                        with st.expander("Debug: Monthly Drawdown Values (USD)"):
-                            st.dataframe(df_month[['Month', 'Drawdown (USD)']])
+                        # Get the maximum drawdown from the trade curve
+                        max_dd_from_curve = df_trades['Drawdown (USD)'].max()
+                        st.caption(f"Max Drawdown from trade curve: **${max_dd_from_curve:.2f}**")
 
-                        max_dd = df_month['Drawdown (USD)'].max()
-                        st.caption(f"Max Drawdown from chart data: **${max_dd:.2f}**")
-
-                        # Create subplots
+                        # Create figure
                         fig = make_subplots(
                             rows=2, cols=1,
                             shared_xaxes=True,
@@ -115,12 +112,12 @@ if st.sidebar.button("Run Single Backtest"):
                             subplot_titles=("Equity Curve (USD)", "Drawdown (USD)")
                         )
 
-                        # Equity curve
+                        # Equity curve (use exit_bar as index)
                         fig.add_trace(
                             go.Scatter(
-                                x=df_month['Month'],
-                                y=df_month['Cumulative P&L (USD)'],
-                                mode='lines+markers',
+                                x=df_trades['exit_bar'],
+                                y=df_trades['Cumulative P&L (USD)'],
+                                mode='lines',
                                 name='Equity Curve',
                                 line=dict(color='green', width=2),
                             ),
@@ -130,8 +127,8 @@ if st.sidebar.button("Run Single Backtest"):
                         # Drawdown bars
                         fig.add_trace(
                             go.Bar(
-                                x=df_month['Month'],
-                                y=df_month['Drawdown (USD)'],
+                                x=df_trades['exit_bar'],
+                                y=df_trades['Drawdown (USD)'],
                                 name='Drawdown',
                                 marker_color='red',
                             ),
@@ -139,23 +136,26 @@ if st.sidebar.button("Run Single Backtest"):
                         )
 
                         # Fix y‑axis: start at 0, go slightly above max
-                        if max_dd > 0:
+                        if max_dd_from_curve > 0:
                             fig.update_yaxes(
                                 row=2, col=1,
-                                range=[0, max_dd * 1.1],
+                                range=[0, max_dd_from_curve * 1.1],
                                 title_text="Drawdown (USD)",
-                                tickformat="$.2f"   # Dollar sign + two decimals
+                                tickformat="$.2f"
                             )
                         else:
                             fig.update_yaxes(row=2, col=1, range=[0, 1], title_text="Drawdown (USD)", tickformat="$.2f")
 
                         # Horizontal line at max drawdown
-                        if max_dd > 0:
-                            fig.add_hline(y=max_dd, line_dash="dash", line_color="orange", row=2, col=1,
-                                          annotation_text=f"Max DD: ${max_dd:.2f}")
+                        if max_dd_from_curve > 0:
+                            fig.add_hline(y=max_dd_from_curve, line_dash="dash", line_color="orange", row=2, col=1,
+                                          annotation_text=f"Max DD: ${max_dd_from_curve:.2f}")
 
                         fig.update_layout(height=700, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
+
+                    else:
+                        st.info("No trade log available to plot equity curve.")
 
                     # --------------------------------------------------
                     # METRICS AND TABLES
