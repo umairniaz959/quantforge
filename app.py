@@ -33,7 +33,7 @@ st.markdown("Upload your CSV data, define parameters, and get AI‑powered analy
 # DEMO MODE BANNER (appears when demo mode is active)
 # --------------------------------------------------------------
 if st.session_state.demo_mode:
-    st.info("ℹ️ **Demo Mode Active** – running the MA Crossover demo strategy (not the validated edge).")
+    st.info("📂 **Demo Mode Active** – please upload your CSV files and set your parameters.")
 
 # --------------------------------------------------------------
 # SIDEBAR – PRESETS
@@ -155,7 +155,7 @@ if st.sidebar.button("Run Single Backtest"):
                         start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
                         end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
                     )
-                    st.info("ℹ️ Ran DEMO strategy (MA Crossover) – not the validated edge.")
+                    st.info("ℹ️ Demo backtest complete.")
                 else:
                     results, trades_df, monthly_df = run_backtest_from_files(
                         st.session_state.uploaded_data,
