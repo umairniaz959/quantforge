@@ -746,3 +746,269 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
         'max_dd_percent': max_dd_pct,
     }
     return results, df_trades, monthly_details
+                          # ==============================================================
+# CUSTOM STRATEGY ENGINE – for user-defined strategies
+# ==============================================================
+
+def compute_indicators(pair_name, bid_array, ask_array, requested_indicators):
+    """
+    requested_indicators: list of dicts like {'indicator': 'sma', 'period': 14}
+    Returns dict with computed series as numpy arrays of same length as bid_array.
+    """
+    import pandas as pd
+    indicators = {}
+    close = bid_array[:, 3]
+    for req in requested_indicators:
+        ind = req['indicator'].lower()
+        period = req.get('period', 14)
+        if ind == 'sma':
+            indicators[f'sma_{period}'] = pd.Series(close).rolling(period).mean().values
+        elif ind == 'ema':
+            indicators[f'ema_{period}'] = pd.Series(close).ewm(span=period, adjust=False).mean().values
+        elif ind == 'rsi':
+            delta = pd.Series(close).diff()
+            gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+            rs = gain / loss
+            indicators[f'rsi_{period}'] = (100 - (100 / (1 + rs))).values
+        # Add MACD, BB if needed later
+    return indicators
+
+def evaluate_condition(cond, idx, bid_array, ask_array, indicators, master_index):
+    """
+    Returns 'buy' or 'sell' if condition is met, else None.
+    """
+    ind = cond.get('indicator')
+    if ind == 'price':
+        val = bid_array[idx][3]  # close
+        prev_val = bid_array[idx-1][3] if idx > 0 else val
+    else:
+        key = f"{ind}_{cond.get('period', 14)}"
+        series = indicators.get(key)
+        if series is None or idx >= len(series):
+            return None
+        val = series[idx]
+        prev_val = series[idx-1] if idx > 0 else val
+    if val is None or prev_val is None:
+        return None
+    cond_type = cond.get('condition', 'above')
+    level = cond.get('level')
+    if cond_type == 'cross_above':
+        if prev_val <= level and val > level:
+            return cond.get('type', 'buy')
+    elif cond_type == 'cross_below':
+        if prev_val >= level and val < level:
+            return cond.get('type', 'sell')
+    elif cond_type == 'above':
+        if val > level:
+            return cond.get('type', 'buy')
+    elif cond_type == 'below':
+        if val < level:
+            return cond.get('type', 'sell')
+    return None
+
+def evaluate_exit(exit_cond, idx, bid_array, ask_array, indicators, sl_price, tp_price, position_type):
+    """
+    Checks indicator-based exit, returns 'buy' (to exit short) or 'sell' (to exit long).
+    Also we handle SL/TP in the main loop separately, so here we only check indicator exits.
+    """
+    if exit_cond.get('type') == 'indicator':
+        ind = exit_cond.get('indicator')
+        if ind:
+            key = f"{ind}_{exit_cond.get('period', 14)}"
+            series = indicators.get(key)
+            if series is None or idx >= len(series):
+                return None
+            val = series[idx]
+            prev_val = series[idx-1] if idx > 0 else val
+            if val is None or prev_val is None:
+                return None
+            cond_type = exit_cond.get('condition', 'below')
+            level = exit_cond.get('level')
+            # For exit: we want to close long when condition becomes true (usually "below" or "cross_below")
+            # For short, the opposite.
+            if position_type == 'BUY':
+                # Exit long: e.g., when RSI crosses below 70
+                if cond_type == 'cross_below' and prev_val >= level and val < level:
+                    return 'sell'   # sell to close
+                elif cond_type == 'below' and val < level:
+                    return 'sell'
+            elif position_type == 'SELL':
+                # Exit short: e.g., when RSI crosses above 30
+                if cond_type == 'cross_above' and prev_val <= level and val > level:
+                    return 'buy'    # buy to close
+                elif cond_type == 'above' and val > level:
+                    return 'buy'
+    return None
+
+def run_custom_strategy(uploaded_files, strategy_params, risk_cents=RISK_CENTS,
+                        start_date=None, end_date=None, reset_balance_monthly=True):
+    """
+    Runs a backtest using the strategy parameters extracted from the user description.
+    """
+    # Load data
+    try:
+        pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
+            uploaded_files, start_date, end_date
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to load data: {e}")
+
+    if not pair_names:
+        return None, None, None
+
+    # For simplicity, we run on the first pair only
+    pair_name = pair_names[0]
+    bid_array = bid_arrays[pair_name]
+    ask_array = ask_arrays[pair_name]
+    n = len(master_index)
+
+    # Prepare indicators
+    indicator_list = []
+    entry = strategy_params.get('entry', {})
+    if entry.get('indicator') and entry.get('indicator') != 'price':
+        indicator_list.append({'indicator': entry['indicator'], 'period': entry.get('period', 14)})
+    exit_cond = strategy_params.get('exit', {})
+    if exit_cond.get('type') == 'indicator' and exit_cond.get('indicator'):
+        indicator_list.append({'indicator': exit_cond['indicator'], 'period': exit_cond.get('period', 14)})
+    indicators = compute_indicators(pair_name, bid_array, ask_array, indicator_list)
+
+    # Simulation variables
+    balance_cents = float(STARTING_BALANCE_CENTS)
+    trades_log = []
+    monthly_details = []
+    in_position = False
+    entry_price = 0.0
+    sl_price = 0.0
+    tp_price = 0.0
+    lot = 0.0
+    entry_bar = 0
+    position_type = None
+    pip_size = get_pip_size(get_pair_currencies(pair_name)[1])
+    quote = get_pair_currencies(pair_name)[1]
+    stop_loss_pips = strategy_params.get('stop_loss_pips', 20)
+    take_profit_pips = strategy_params.get('take_profit_pips', 40)
+    risk_per_trade_pct = strategy_params.get('risk_per_trade', 2.0) / 100.0
+
+    for i in range(20, n-1):
+        ts = master_index[i]
+        ob, hb, lb, cb = bid_array[i]
+        oa, ha, la, ca = ask_array[i]
+
+        if not in_position:
+            # Check entry signal
+            signal = evaluate_condition(entry, i, bid_array, ask_array, indicators, master_index)
+            if signal:
+                # Open trade
+                if signal == 'buy':
+                    entry_price = ask_array[i][3]  # buy at ask
+                    position_type = 'BUY'
+                    sl_price = entry_price - stop_loss_pips * pip_size
+                    tp_price = entry_price + take_profit_pips * pip_size
+                else:  # sell
+                    entry_price = bid_array[i][3]  # sell at bid
+                    position_type = 'SELL'
+                    sl_price = entry_price + stop_loss_pips * pip_size
+                    tp_price = entry_price - take_profit_pips * pip_size
+
+                # Position sizing
+                pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
+                if pip_val is None:
+                    continue
+                risk_pips = stop_loss_pips
+                risk_cents_per_lot = risk_pips * pip_val * 100
+                # Use risk_per_trade_pct of balance as risk in cents
+                risk_cents_trade = balance_cents * risk_per_trade_pct
+                lot = risk_cents_trade / risk_cents_per_lot
+                # round lot
+                lot = np.floor(lot / LOT_STEP) * LOT_STEP if SIMULATE_LOT_ROUNDING else lot
+                lot = max(MIN_LOT, min(MAX_LOT, lot))
+
+                in_position = True
+                entry_bar = i
+        else:
+            # Check stop loss and take profit
+            closed = False
+            if position_type == 'BUY':
+                if lb <= sl_price:
+                    exit_price = sl_price
+                    closed = True
+                    reason = 'SL'
+                elif hb >= tp_price:
+                    exit_price = tp_price
+                    closed = True
+                    reason = 'TP'
+            else:  # SELL
+                if ha >= sl_price:
+                    exit_price = sl_price
+                    closed = True
+                    reason = 'SL'
+                elif la <= tp_price:
+                    exit_price = tp_price
+                    closed = True
+                    reason = 'TP'
+
+            # Check indicator-based exit if not closed yet
+            if not closed:
+                exit_signal = evaluate_exit(exit_cond, i, bid_array, ask_array, indicators, sl_price, tp_price, position_type)
+                if exit_signal:
+                    if position_type == 'BUY' and exit_signal == 'sell':
+                        exit_price = bid_array[i][3]  # exit at bid for long
+                        closed = True
+                        reason = 'Indicator'
+                    elif position_type == 'SELL' and exit_signal == 'buy':
+                        exit_price = ask_array[i][3]  # exit at ask for short
+                        closed = True
+                        reason = 'Indicator'
+
+            if closed:
+                # Calculate P&L
+                if position_type == 'BUY':
+                    pip_pnl = (exit_price - entry_price) / pip_size
+                else:
+                    pip_pnl = (entry_price - exit_price) / pip_size
+                pip_val = get_pip_value(pair_name, quote, exit_price, ts, ref_prices, 'triangulated')
+                if pip_val is None:
+                    pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
+                pnl_cents = pip_pnl * pip_val * 100 * lot
+                balance_cents += pnl_cents
+                trades_log.append({
+                    'pair': pair_name,
+                    'type': position_type,
+                    'entry_bar': entry_bar,
+                    'exit_bar': i,
+                    'entry': entry_price,
+                    'exit': exit_price,
+                    'reason': reason,
+                    'pnl_cents': pnl_cents,
+                    'lot': lot,
+                    'risk_pips': stop_loss_pips,
+                    'balance_after': balance_cents,
+                    'year': ts.year
+                })
+                in_position = False
+
+    # Build results
+    df_trades = pd.DataFrame(trades_log)
+    if df_trades.empty:
+        return None, None, None
+
+    wins = df_trades[df_trades['pnl_cents'] > 0]['pnl_cents']
+    losses = df_trades[df_trades['pnl_cents'] < 0]['pnl_cents']
+    pf = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
+    win_rate = (df_trades['pnl_cents'] > 0).mean() * 100
+    total_withdrawn_usd = 0
+    avg_monthly_usd = 0
+    max_dd_cents = 0
+    max_dd_pct = 0
+
+    results = {
+        'total_trades': len(df_trades),
+        'win_rate': win_rate,
+        'profit_factor': pf,
+        'total_withdrawn_usd': total_withdrawn_usd,
+        'avg_monthly_usd': avg_monthly_usd,
+        'max_dd_cents': max_dd_cents,
+        'max_dd_percent': max_dd_pct,
+    }
+    return results, df_trades, []
