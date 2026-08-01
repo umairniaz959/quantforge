@@ -6,6 +6,6 @@ numpy
 plotly
 openai
 python-dotenv
-google-generativeai
+google-genai
 yfinance
 requests
