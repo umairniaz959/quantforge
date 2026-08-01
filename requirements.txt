@@ -10,4 +10,4 @@ google-genai
 yfinance
 requests
 groq
-gugginface-hub
+huggingface-hub
