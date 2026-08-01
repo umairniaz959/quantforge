@@ -317,7 +317,7 @@ def show_history():
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# STRATEGY STUDIO PAGE
+# STRATEGY STUDIO PAGE (with full navigation)
 # ============================================================
 def reset_studio():
     """Reset all studio-related session state to start over."""
