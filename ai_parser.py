@@ -1,7 +1,9 @@
 import os
 import json
-import google.generativeai as genai
+from google import genai  # New SDK – no more warnings
 
+# This is the base class that the generated strategy will inherit from.
+# It stays unchanged.
 BASE_CLASS_CODE = """
 class Strategy:
     def __init__(self, data):
@@ -35,34 +37,21 @@ class Strategy:
 """
 
 def parse_strategy_full(description, api_key=None):
+    """
+    Main function: takes a plain‑English strategy description,
+    sends it to Gemini, and returns a dict with 'code', 'summary', and 'params'.
+    """
     if api_key is None:
         api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found. Please set GEMINI_API_KEY in your environment or secrets.")
 
     try:
-        genai.configure(api_key=api_key)
-        # List all models and pick the first one that works
-        all_models = genai.list_models()
-        candidates = [
-            m.name for m in all_models
-            if "gemini" in m.name.lower() and "generateContent" in m.supported_generation_methods
-        ]
-        if not candidates:
-            raise RuntimeError(f"No Gemini models available. Available: {all_models}")
+        # 1. Create the new Gemini client
+        client = genai.Client(api_key=api_key)
 
-        # Try models in order (most stable first)
-        model_order = ["gemini-1.0-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
-        # Keep only those that are available
-        models_to_try = [m for m in model_order if m in candidates] + [m for m in candidates if m not in model_order]
-
-        last_error = None
-        for model_name in models_to_try:
-            try:
-                print(f"Trying model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                
-                system_prompt = f"""
+        # 2. Build the prompt – this tells Gemini exactly what to produce
+        system_prompt = f"""
 You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
 
 1. "code": a complete Python class `UserStrategy` that inherits from the provided `Strategy` base class.
@@ -83,36 +72,38 @@ Important: The `data` DataFrame passed to your strategy has columns named **'ope
 
 Return ONLY a valid JSON object, no extra text.
 """
-                full_prompt = system_prompt + "\nUser description: " + description
-                response = model.generate_content(full_prompt)
-                content = response.text.strip()
-                
-                # Clean markdown fences
-                if content.startswith("```json"):
-                    content = content[7:]
-                if content.startswith("```"):
-                    content = content[3:]
-                if content.endswith("```"):
-                    content = content[:-3]
-                    
-                data = json.loads(content)
-                data.setdefault("code", "")
-                data.setdefault("summary", "Strategy generated.")
-                data.setdefault("params", {})
-                data["params"].setdefault("stop_loss_pips", 20)
-                data["params"].setdefault("take_profit_pips", 40)
-                data["params"].setdefault("risk_per_trade", 2.0)
-                data["params"].setdefault("indicators", [])
-                return data
-            except Exception as e:
-                last_error = e
-                print(f"Model {model_name} failed: {e}")
-                continue
+        full_prompt = system_prompt + "\nUser description: " + description
 
-        raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
+        # 3. Call Gemini – using the new `generate_content` method
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",   # stable and fast model
+            contents=full_prompt,
+        )
+
+        # 4. Extract the response text
+        content = response.text.strip()
+
+        # 5. Remove any markdown code fences that Gemini might add
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+
+        # 6. Parse JSON and fill defaults
+        data = json.loads(content)
+        data.setdefault("code", "")
+        data.setdefault("summary", "Strategy generated.")
+        data.setdefault("params", {})
+        data["params"].setdefault("stop_loss_pips", 20)
+        data["params"].setdefault("take_profit_pips", 40)
+        data["params"].setdefault("risk_per_trade", 2.0)
+        data["params"].setdefault("indicators", [])
+        return data
 
     except Exception as e:
         raise RuntimeError(f"Failed to generate strategy code with Gemini: {e}")
 
-# Backward compatibility alias
+# Backward compatibility – so you can still use `parse_strategy` if needed
 parse_strategy = parse_strategy_full
