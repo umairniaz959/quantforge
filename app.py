@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import datetime
 from ai_parser import parse_strategy
 import streamlit_authenticator as stauth
-from backtest_engine import run_backtest_from_files, run_wfv_from_files, run_demo_backtest
+from backtest_engine import run_backtest_from_files, run_wfv_from_files, run_demo_backtest, run_custom_strategy
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
 
 # --- Initialize database ---
