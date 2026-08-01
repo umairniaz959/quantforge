@@ -2,28 +2,25 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import datetime
-import streamlit_authenticator as stauth
+import os
+from dotenv import load_dotenv
 from backtest_engine import (
     run_backtest_from_files,
     run_wfv_from_files,
     run_demo_backtest,
-    run_custom_strategy
+    run_custom_strategy,
+    run_generated_strategy
 )
 from ai_parser import parse_strategy
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
-import os
-import streamlit as st
-from dotenv import load_dotenv
 
-# 1. Load .env file (for local development)
+# Load .env file (for local development)
 load_dotenv()
 
-# 2. Override with Streamlit Secrets if running on Streamlit Cloud
-#    (This is where you'll store the key safely on GitHub/Cloud)
+# If running on Streamlit Cloud, override with secrets
 if hasattr(st, 'secrets') and "GEMINI_API_KEY" in st.secrets:
     os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 
-# Now the key is available via os.getenv("GEMINI_API_KEY") anywhere in your app
 # --- Initialize database ---
 init_db()
 
@@ -44,8 +41,8 @@ if "uploaded_data" not in st.session_state:
     st.session_state.uploaded_data = {}
 if "demo_mode" not in st.session_state:
     st.session_state.demo_mode = False
-if "strategy_params" not in st.session_state:
-    st.session_state.strategy_params = None
+if "generated_code" not in st.session_state:
+    st.session_state.generated_code = None
 if "uploaded_data_custom" not in st.session_state:
     st.session_state.uploaded_data_custom = {}
 
@@ -161,11 +158,9 @@ def show_backtest():
         st.subheader("Upload Data")
         uploaded_files = st.file_uploader("Upload your CSV files (BID and ASK)", type=["csv"], accept_multiple_files=True)
         if uploaded_files:
-            # Replace session state with new uploads (prevents accumulation)
             st.session_state.uploaded_data = {file.name: file for file in uploaded_files}
             st.success(f"{len(uploaded_files)} files uploaded.")
         else:
-            # Optionally, keep existing files if none uploaded? We'll keep as is.
             pass
 
         if st.button("Clear Files"):
@@ -177,7 +172,6 @@ def show_backtest():
         st.subheader("EA Export")
         ea_magic = st.number_input("Magic Number", value=123457, step=1)
         if st.button("Download EA (MQL4)"):
-            # Placeholder – you can integrate actual EA generation here
             ea_code = "// Your EA code here (use the full code from your validated EA)"
             st.download_button("Download EA (MQL4)", data=ea_code, file_name=f"EA_Risk{risk_cents}_Magic{ea_magic}.mq4", mime="text/plain")
 
@@ -193,7 +187,6 @@ def show_backtest():
             else:
                 with st.spinner("Running backtest..."):
                     try:
-                        # Determine which strategy to run
                         if st.session_state.get("demo_mode", False):
                             results, trades_df, monthly_df = run_demo_backtest(
                                 st.session_state.uploaded_data,
@@ -220,17 +213,14 @@ def show_backtest():
                             st.warning("No trades in the selected period.")
                         else:
                             st.success("Backtest complete!")
-                            # Add risk_cents to results dict for saving
                             results['risk_cents'] = risk_cents
 
-                            # --- Display Metrics ---
                             col1, col2, col3, col4 = st.columns(4)
                             col1.metric("Total Trades", results['total_trades'])
                             col2.metric("Win Rate", f"{results['win_rate']:.1f}%")
                             col3.metric("Profit Factor", f"{results['profit_factor']:.2f}")
                             col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
-                            # --- Equity Curve ---
                             if trades_df is not None and not trades_df.empty:
                                 trades_df['cumulative'] = trades_df['pnl_cents'].cumsum()
                                 fig_equity = go.Figure()
@@ -239,31 +229,25 @@ def show_backtest():
                                 fig_equity.update_layout(title='Equity Curve', xaxis_title='Bar Index', yaxis_title='Cumulative P&L (cents)')
                                 st.plotly_chart(fig_equity, use_container_width=True)
 
-                            # --- Trade Log ---
                             st.subheader("Trade Log")
                             st.dataframe(trades_df[['pair', 'type', 'entry', 'exit', 'pnl_cents', 'lot', 'reason']])
 
-                            # --- Monthly Performance ---
                             if monthly_df:
                                 st.subheader("Monthly Performance")
                                 monthly_df_display = pd.DataFrame(monthly_df)
                                 st.dataframe(monthly_df_display)
-
-                                # Monthly P&L bar chart
                                 fig_monthly = go.Figure()
                                 fig_monthly.add_trace(go.Bar(x=monthly_df_display['Month'], y=monthly_df_display['Monthly P&L (cents)'],
                                                              name='Monthly P&L'))
                                 fig_monthly.update_layout(title='Monthly P&L', xaxis_title='Month', yaxis_title='P&L (cents)')
                                 st.plotly_chart(fig_monthly, use_container_width=True)
 
-                            # --- Download buttons ---
                             csv_trades = trades_df.to_csv(index=False).encode('utf-8')
                             st.download_button("Download Trades (CSV)", data=csv_trades, file_name="trades.csv", mime="text/csv")
                             if monthly_df:
                                 csv_monthly = pd.DataFrame(monthly_df).to_csv(index=False).encode('utf-8')
                                 st.download_button("Download Monthly (CSV)", data=csv_monthly, file_name="monthly.csv", mime="text/csv")
 
-                            # --- Save to database ---
                             save_success = save_backtest_result(
                                 st.session_state.user_id,
                                 results,
@@ -329,81 +313,50 @@ def show_history():
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# STRATEGY STUDIO PAGE (NEW)
+# STRATEGY STUDIO PAGE (new – AI code generation)
 # ============================================================
 def show_strategy_studio():
     st.title("🧪 Strategy Studio – Build Your Own Strategy")
-    st.markdown("Describe your strategy in plain English, and let AI extract the rules.")
-    
-    with st.form("strategy_form"):
-        description = st.text_area("Describe your strategy", height=150,
-                                   placeholder="Example: Buy when 14-period RSI crosses above 30, sell when RSI crosses below 70. Stop loss 50 pips, take profit 100 pips. Risk 2% per trade.")
-        submitted = st.form_submit_button("Generate Strategy")
-    
-    if submitted:
+    st.markdown("Describe your strategy in plain English, and Gemini will write the code for you.")
+
+    description = st.text_area("Describe your strategy", height=150,
+                               placeholder="Example: Buy when 14-period RSI crosses above 30, sell when RSI crosses below 70. Stop loss 50 pips, take profit 100 pips. Risk 2% per trade.")
+    if st.button("Generate Code"):
         if not description.strip():
             st.warning("Please enter a description.")
         else:
-            with st.spinner("AI is parsing your strategy..."):
+            with st.spinner("Gemini is writing your strategy code..."):
                 try:
-                    params = parse_strategy(description)
-                    st.session_state.strategy_params = params
-                    st.success("Strategy parsed! Review and edit the parameters below.")
+                    code = parse_strategy(description)
+                    st.session_state.generated_code = code
+                    st.success("Code generated! Review and edit it below.")
                 except Exception as e:
-                    st.error(f"Error parsing: {e}")
-    
-    if "strategy_params" in st.session_state and st.session_state.strategy_params:
-        params = st.session_state.strategy_params
-        with st.expander("Edit Parameters", expanded=True):
-            # Display editable fields
-            entry = params.get('entry', {})
-            col1, col2 = st.columns(2)
-            with col1:
-                entry_type = st.selectbox("Entry Type", ["buy", "sell"], index=0 if entry.get('type')=='buy' else 1)
-                indicator = st.text_input("Entry Indicator", entry.get('indicator', 'sma'))
-                period = st.number_input("Entry Period", value=entry.get('period', 14), step=1)
-                condition = st.selectbox("Entry Condition", ["cross_above", "cross_below", "above", "below"], 
-                                         index=0 if entry.get('condition')=='cross_above' else 1 if entry.get('condition')=='cross_below' else 2 if entry.get('condition')=='above' else 3)
-                level = st.number_input("Entry Level (if applicable)", value=entry.get('level', 30.0) if entry.get('level') is not None else 0.0)
-            with col2:
-                exit_cond = params.get('exit', {})
-                exit_type = st.selectbox("Exit Type", ["indicator", "stop_loss", "take_profit"], 
-                                         index=0 if exit_cond.get('type')=='indicator' else 1)
-                exit_indicator = st.text_input("Exit Indicator", exit_cond.get('indicator', 'rsi'))
-                exit_period = st.number_input("Exit Period", value=exit_cond.get('period', 14), step=1)
-                exit_condition = st.selectbox("Exit Condition", ["cross_above", "cross_below", "above", "below"],
-                                              index=1 if exit_cond.get('condition')=='cross_below' else 0)
-                exit_level = st.number_input("Exit Level", value=exit_cond.get('level', 70.0) if exit_cond.get('level') is not None else 0.0)
-            risk_pct = st.number_input("Risk per Trade (%)", value=params.get('risk_per_trade', 2.0), step=0.1)
-            sl_pips = st.number_input("Stop Loss (pips)", value=params.get('stop_loss_pips', 20), step=1)
-            tp_pips = st.number_input("Take Profit (pips)", value=params.get('take_profit_pips', 40), step=1)
-            
-            # Update params with edited values
-            params['entry'] = {'type': entry_type, 'indicator': indicator, 'period': int(period), 'condition': condition, 'level': level}
-            params['exit'] = {'type': exit_type, 'indicator': exit_indicator, 'period': int(exit_period), 'condition': exit_condition, 'level': exit_level}
-            params['risk_per_trade'] = risk_pct
-            params['stop_loss_pips'] = sl_pips
-            params['take_profit_pips'] = tp_pips
-            st.session_state.strategy_params = params
-        
+                    st.error(f"Error: {e}")
+
+    if st.session_state.get("generated_code"):
+        st.subheader("Generated Strategy Code (editable)")
+        edited_code = st.text_area("", value=st.session_state.generated_code, height=300)
+        # We'll store the edited version in session state for later use
+        st.session_state.generated_code = edited_code
+
         # File upload for custom backtest
         st.subheader("Upload Data for Custom Backtest")
-        uploaded_files = st.file_uploader("Upload CSV files (BID and ASK)", type=["csv"], accept_multiple_files=True, key="custom_upload")
+        uploaded_files = st.file_uploader("Upload CSV files (BID and ASK)", type=["csv"], accept_multiple_files=True, key="code_upload")
         if uploaded_files:
             st.session_state.uploaded_data_custom = {f.name: f for f in uploaded_files}
             st.success(f"{len(uploaded_files)} files uploaded.")
-        if st.button("Run Custom Backtest"):
+
+        if st.button("Run Backtest with This Code"):
             if "uploaded_data_custom" not in st.session_state or not st.session_state.uploaded_data_custom:
                 st.error("Please upload data files.")
             else:
                 with st.spinner("Running custom strategy..."):
                     try:
-                        # Convert risk % to risk cents (use balance * risk%)
-                        risk_cents = int(10000 * (risk_pct / 100.0))  # starting balance 10000 cents
-                        results, trades_df, monthly_df = run_custom_strategy(
+                        # Use the edited code
+                        results, trades_df, monthly_df = run_generated_strategy(
                             st.session_state.uploaded_data_custom,
-                            params,
-                            risk_cents=risk_cents,
+                            st.session_state.generated_code,
+                            risk_cents=70,  # You can add a number input for risk
                             start_date=None,
                             end_date=None
                         )
@@ -411,26 +364,21 @@ def show_strategy_studio():
                             st.warning("No trades generated. Try adjusting parameters.")
                         else:
                             st.success("Custom backtest complete!")
-                            # Display metrics
                             col1, col2, col3, col4 = st.columns(4)
                             col1.metric("Total Trades", results['total_trades'])
                             col2.metric("Win Rate", f"{results['win_rate']:.1f}%")
                             col3.metric("Profit Factor", f"{results['profit_factor']:.2f}")
                             col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
-                            
-                            # Equity curve if trades exist
+
                             if trades_df is not None and not trades_df.empty:
-                                trades_df['cumulative'] = trades_df['pnl_cents'].cumsum()
+                                trades_df['cumulative'] = trades_df['pnl'].cumsum()
                                 fig_equity = go.Figure()
                                 fig_equity.add_trace(go.Scatter(x=trades_df['exit_bar'], y=trades_df['cumulative'],
-                                                                 mode='lines', name='Equity (cents)'))
-                                fig_equity.update_layout(title='Equity Curve', xaxis_title='Bar Index', yaxis_title='Cumulative P&L (cents)')
+                                                                 mode='lines', name='Equity'))
+                                fig_equity.update_layout(title='Equity Curve', xaxis_title='Bar Index', yaxis_title='Cumulative P&L')
                                 st.plotly_chart(fig_equity, use_container_width=True)
-                                
                                 st.subheader("Trade Log")
-                                st.dataframe(trades_df[['pair', 'type', 'entry', 'exit', 'pnl_cents', 'lot', 'reason']])
-                                
-                                # Download button
+                                st.dataframe(trades_df[['entry', 'exit', 'type', 'pnl']])
                                 csv_trades = trades_df.to_csv(index=False).encode('utf-8')
                                 st.download_button("Download Trades (CSV)", data=csv_trades, file_name="custom_trades.csv", mime="text/csv")
                     except Exception as e:
