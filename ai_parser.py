@@ -1,9 +1,9 @@
 import os
 import json
+import openai
 from google import genai
 from groq import Groq
 from huggingface_hub import InferenceClient
-import time
 
 # ---------- Base class code ----------
 BASE_CLASS_CODE = """
@@ -90,7 +90,7 @@ def call_gemini(description, api_key):
     )
     return parse_response(response.text)
 
-# ---------- Provider 2: Groq (using Llama 3) ----------
+# ---------- Provider 2: Groq ----------
 def call_groq(description, api_key):
     client = Groq(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
@@ -98,25 +98,40 @@ def call_groq(description, api_key):
         model="llama3-70b-8192",
         messages=[{"role": "user", "content": full_prompt}],
         temperature=0.2,
-        response_format={"type": "json_object"}  # Groq supports JSON mode
+        response_format={"type": "json_object"}
     )
     content = response.choices[0].message.content
     return parse_response(content)
 
-# ---------- Provider 3: Hugging Face (free inference) ----------
+# ---------- Provider 3: Hugging Face ----------
 def call_huggingface(description, api_token):
     client = InferenceClient(token=api_token)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
     response = client.post(
-        model="meta-llama/Llama-3.2-3B-Instruct",  # free model
+        model="meta-llama/Llama-3.2-3B-Instruct",
         inputs=full_prompt,
         parameters={"temperature": 0.2, "max_new_tokens": 2048}
     )
-    # Response is a list of dicts – extract generated text
     if isinstance(response, list) and len(response) > 0:
         content = response[0].get("generated_text", "")
     else:
         content = str(response)
+    return parse_response(content)
+
+# ---------- Provider 4: GLM-5.2 (Z.ai) ----------
+def call_glm(description, api_key):
+    client = openai.OpenAI(
+        api_key=api_key,
+        base_url="https://api.z.ai/v1"
+    )
+    full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
+    response = client.chat.completions.create(
+        model="glm-5.2",
+        messages=[{"role": "user", "content": full_prompt}],
+        temperature=0.2,
+        response_format={"type": "json_object"}
+    )
+    content = response.choices[0].message.content
     return parse_response(content)
 
 # ---------- Main function: try providers in order ----------
@@ -151,11 +166,21 @@ def parse_strategy_full(description, api_key=None):
     else:
         print("Hugging Face token not set, skipping.")
 
+    # 4. GLM-5.2 (Z.ai)
+    glm_key = os.getenv("ZAI_API_KEY")
+    if glm_key:
+        try:
+            return call_glm(description, glm_key)
+        except Exception as e:
+            print(f"GLM-5.2 failed: {e}")
+    else:
+        print("Z.ai API key not set, skipping GLM-5.2.")
+
     # If all fail
     raise RuntimeError(
         "All AI providers failed. Please check your API keys or try again later.\n"
-        "Providers tried: Gemini, Groq, Hugging Face.\n"
-        "Set at least one of: GEMINI_API_KEY, GROQ_API_KEY, HF_API_TOKEN."
+        "Providers tried: Gemini, Groq, Hugging Face, GLM-5.2.\n"
+        "Set at least one of: GEMINI_API_KEY, GROQ_API_KEY, HF_API_TOKEN, ZAI_API_KEY."
     )
 
 # Alias for backward compatibility
