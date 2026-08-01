@@ -578,6 +578,119 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
         'Average Monthly (USD)': combined_withdrawn_usd / combined_months if combined_months > 0 else 0,
     }
     return block_results, summary
+                           def run_generated_strategy_from_df(data, user_code, params, initial_balance=10000):
+    """
+    Runs a generated strategy directly on a DataFrame (no file uploads).
+    data must have columns: open, high, low, close.
+    """
+    # Ensure column names are lowercase
+    data.columns = [col.lower() for col in data.columns]
+
+    # Forward fill any NaN
+    data = data.ffill().bfill()
+
+    # Add prev_day_close using resample (assumes datetime index)
+    if isinstance(data.index, pd.DatetimeIndex):
+        daily_close = data['close'].resample('D').last()
+        prev_day_close = daily_close.shift(1).reindex(data.index, method='ffill')
+        data['prev_day_close'] = prev_day_close
+    else:
+        # Fallback: shift by 24 bars (assuming hourly)
+        data['prev_day_close'] = data['close'].shift(24)
+
+    # Clean user code: replace uppercase column names
+    user_code_fixed = user_code
+    for col in ['Close', 'High', 'Low', 'Open']:
+        user_code_fixed = user_code_fixed.replace(f"['{col}']", f"['{col.lower()}']")
+        user_code_fixed = user_code_fixed.replace(f'["{col}"]', f'["{col.lower()}"]')
+
+    # Execute user code
+    local_scope = {'Strategy': Strategy, 'pd': pd, 'np': np}
+    try:
+        exec(user_code_fixed, local_scope)
+        UserStrategy = local_scope['UserStrategy']
+    except Exception as e:
+        raise RuntimeError(f"Error in user code: {e}")
+
+    # Instantiate and set params
+    strategy = UserStrategy(data)
+    strategy.stop_loss_pips = params.get('stop_loss_pips', 20)
+    strategy.take_profit_pips = params.get('take_profit_pips', 40)
+    strategy.risk_per_trade = params.get('risk_per_trade', 2.0)
+    strategy.init()
+
+    # Simulation loop (same as before – copy from your existing run_generated_strategy)
+    # I'll include the full loop here for completeness:
+    balance = initial_balance
+    trades_log = []
+    in_position = False
+    entry_price = 0.0
+    entry_type = None
+    entry_bar = 0
+    sl_price = 0.0
+    tp_price = 0.0
+
+    for i in range(len(data)):
+        try:
+            strategy.next(i)
+        except Exception as e:
+            print(f"Error in strategy.next() at bar {i}: {e}")
+            continue
+
+        current_pos = strategy.position
+        if current_pos != 0 and not in_position:
+            entry_price = data['close'].iloc[i]
+            entry_type = 'BUY' if current_pos == 1 else 'SELL'
+            sl_price = strategy.sl_price if strategy.sl_price is not None else 0.0
+            tp_price = strategy.tp_price if strategy.tp_price is not None else 0.0
+            in_position = True
+            entry_bar = i
+        elif current_pos == 0 and in_position:
+            exit_price = data['close'].iloc[i]
+            if entry_type == 'BUY':
+                pnl = (exit_price - entry_price) * 100000  # simplistic lot size
+            else:
+                pnl = (entry_price - exit_price) * 100000
+            trades_log.append({
+                'entry_bar': entry_bar,
+                'exit_bar': i,
+                'entry': entry_price,
+                'exit': exit_price,
+                'type': entry_type,
+                'pnl': pnl,
+                'sl': sl_price,
+                'tp': tp_price
+            })
+            in_position = False
+            sl_price = 0.0
+            tp_price = 0.0
+
+    df_trades = pd.DataFrame(trades_log)
+    if df_trades.empty:
+        debug_info = {
+            "strategy_code": user_code_fixed,
+            "data_head": data.head(10).to_dict(),
+            "data_shape": data.shape,
+            "columns": data.columns.tolist(),
+            "message": "No trades generated. Check conditions."
+        }
+        return None, None, debug_info
+
+    wins = df_trades[df_trades['pnl'] > 0]['pnl']
+    losses = df_trades[df_trades['pnl'] < 0]['pnl']
+    pf = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
+    win_rate = (df_trades['pnl'] > 0).mean() * 100
+
+    results = {
+        'total_trades': len(df_trades),
+        'win_rate': win_rate,
+        'profit_factor': pf,
+        'total_withdrawn_usd': 0,
+        'avg_monthly_usd': 0,
+        'max_dd_cents': 0,
+        'max_dd_percent': 0,
+    }
+    return results, df_trades, {}
 
 # --------------------------------------------------------------
 # DEMO STRATEGY
