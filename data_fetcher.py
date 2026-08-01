@@ -1,10 +1,9 @@
 import pandas as pd
+import yfinance as yf
 import requests
-import io
-import zipfile
 from datetime import datetime, timedelta
+import io
 
-# Mapping from our interval strings to Dukascopy period codes
 PERIOD_MAP = {
     "1m": 1,
     "5m": 5,
@@ -17,7 +16,6 @@ PERIOD_MAP = {
     "1mn": 43200,
 }
 
-# Dukascopy instrument codes
 INSTRUMENT_MAP = {
     "EURUSD": "EUR/USD",
     "GBPUSD": "GBP/USD",
@@ -31,84 +29,108 @@ INSTRUMENT_MAP = {
     "GBPJPY": "GBP/JPY",
 }
 
-def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
-    """
-    Fetch OHLC data directly from Dukascopy's public feed.
-    Returns a DataFrame with columns: open, high, low, close.
-    """
+# Yahoo Finance tickers
+YAHOO_MAP = {
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X",
+    "AUDUSD": "AUDUSD=X",
+    "USDCAD": "USDCAD=X",
+    "USDCHF": "USDCHF=X",
+    "NZDUSD": "NZDUSD=X",
+    "EURGBP": "EURGBP=X",
+    "EURJPY": "EURJPY=X",
+    "GBPJPY": "GBPJPY=X",
+}
+
+def fetch_dukascopy_intraday(symbol, start_date, end_date, interval):
+    """Fetch intraday data from Dukascopy public feed."""
     instrument = INSTRUMENT_MAP.get(symbol.upper())
     if not instrument:
-        raise ValueError(f"Symbol {symbol} not supported. Available: {list(INSTRUMENT_MAP.keys())}")
-
-    period = PERIOD_MAP.get(interval)
-    if not period:
-        raise ValueError(f"Interval {interval} not supported. Use: {list(PERIOD_MAP.keys())}")
-
+        return None
+    
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-
-    # Dukascopy data URL format
-    # https://www.dukascopy.com/datafeed/{instrument}/{year}/{month}/{day}/{hour}h_ticks.bi5
-    # We'll fetch daily files and combine them
-
-    all_data = []
+    instrument_code = instrument.replace("/", "")
     
-    # Iterate through each day in the range
+    all_data = []
     current_date = start_dt
+    
     while current_date <= end_dt:
         year = current_date.year
         month = str(current_date.month).zfill(2)
         day = str(current_date.day).zfill(2)
         
-        # Format instrument for URL (EURUSD -> EURUSD)
-        instrument_code = instrument.replace("/", "")
-        
-        # Dukascopy stores data in .bi5 files (compressed)
-        # We'll use the tick data and resample to our desired timeframe
-        base_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/"
-        
-        # Try to get data for this day
+        csv_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
         try:
-            response = requests.get(base_url + "00h_ticks.bi5", timeout=10)
+            response = requests.get(csv_url, timeout=10)
             if response.status_code == 200:
-                # Process the .bi5 file (it's a binary format)
-                # We'll use the bi5 library or parse manually
-                # For simplicity, we'll use a fallback: download from alternative source
-                # Let's use the CSV endpoint instead
-                csv_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
-                csv_response = requests.get(csv_url, timeout=10)
-                if csv_response.status_code == 200:
-                    df_day = pd.read_csv(io.StringIO(csv_response.text), 
-                                        names=['timestamp', 'bid', 'ask', 'volume'])
-                    df_day['timestamp'] = pd.to_datetime(df_day['timestamp'], unit='ms')
-                    # Convert to OHLC
-                    if not df_day.empty:
-                        # Resample to the desired interval
-                        df_day.set_index('timestamp', inplace=True)
-                        ohlc = df_day['bid'].resample(interval).ohlc()
-                        ohlc.columns = ['open', 'high', 'low', 'close']
-                        all_data.append(ohlc)
-        except Exception as e:
-            # Skip days with no data (weekends, holidays)
+                df_day = pd.read_csv(io.StringIO(response.text), 
+                                    names=['timestamp', 'bid', 'ask', 'volume'])
+                df_day['timestamp'] = pd.to_datetime(df_day['timestamp'], unit='ms')
+                if not df_day.empty:
+                    df_day.set_index('timestamp', inplace=True)
+                    ohlc = df_day['bid'].resample(interval).ohlc()
+                    ohlc.columns = ['open', 'high', 'low', 'close']
+                    all_data.append(ohlc)
+        except:
             pass
-        
         current_date += timedelta(days=1)
-
+    
     if not all_data:
-        raise ValueError(f"No data found for {symbol} from {start_date} to {end_date}")
-
-    # Combine all days
+        return None
+    
     df = pd.concat(all_data)
     df = df[~df.index.duplicated(keep='first')]
-    df = df.sort_index()
-    
-    # Remove NaN values
-    df = df.dropna()
-    
-    if df.empty:
-        raise ValueError(f"All rows dropped. Try a different date range.")
-
+    df = df.sort_index().dropna()
     return df
+
+def fetch_yahoo_data(symbol, start_date, end_date, interval):
+    """Fetch data from Yahoo Finance (good for daily and above)."""
+    ticker = YAHOO_MAP.get(symbol.upper())
+    if not ticker:
+        return None
+    
+    yf_interval = "1d" if interval == "1d" else "1wk" if interval == "1w" else "1mo"
+    
+    try:
+        df = yf.download(
+            tickers=ticker,
+            start=start_date,
+            end=end_date,
+            interval=yf_interval,
+            progress=False,
+            auto_adjust=False
+        )
+        if df is None or df.empty:
+            return None
+        df.columns = [c.lower() for c in df.columns]
+        df = df[['open', 'high', 'low', 'close']]
+        return df.dropna()
+    except:
+        return None
+
+def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
+    """
+    Fetch OHLC data – uses Dukascopy for intraday, Yahoo for daily+.
+    """
+    intraday_intervals = ["1m", "5m", "15m", "30m", "1h", "4h"]
+    
+    if interval in intraday_intervals:
+        df = fetch_dukascopy_intraday(symbol, start_date, end_date, interval)
+        if df is not None and not df.empty:
+            return df
+        # Fallback to Yahoo daily if Dukascopy fails
+        print(f"Dukascopy failed, falling back to Yahoo daily for {symbol}")
+        df = fetch_yahoo_data(symbol, start_date, end_date, "1d")
+        if df is not None and not df.empty:
+            return df
+    else:
+        df = fetch_yahoo_data(symbol, start_date, end_date, interval)
+        if df is not None and not df.empty:
+            return df
+    
+    raise ValueError(f"No data found for {symbol} from {start_date} to {end_date} with interval {interval}")
 
 def get_available_pairs():
     return list(INSTRUMENT_MAP.keys())
