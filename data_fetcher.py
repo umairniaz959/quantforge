@@ -1,11 +1,12 @@
 import pandas as pd
 import numpy as np
-import yfinance as yf
-from datetime import datetime, timedelta
 import requests
 import io
 import pickle
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
+import yfinance as yf  # fallback
 
 # ---------- Configuration ----------
 CACHE_DIR = Path("data_cache")
@@ -13,20 +14,6 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 # Supported pairs
 PAIR_MAP = {
-    "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
-    "USDJPY": "USDJPY=X",
-    "AUDUSD": "AUDUSD=X",
-    "USDCAD": "USDCAD=X",
-    "USDCHF": "USDCHF=X",
-    "NZDUSD": "NZDUSD=X",
-    "EURGBP": "EURGBP=X",
-    "EURJPY": "EURJPY=X",
-    "GBPJPY": "GBPJPY=X",
-}
-
-# Dukascopy instrument mapping
-INSTRUMENT_MAP = {
     "EURUSD": "EUR/USD",
     "GBPUSD": "GBP/USD",
     "USDJPY": "USD/JPY",
@@ -39,77 +26,33 @@ INSTRUMENT_MAP = {
     "GBPJPY": "GBP/JPY",
 }
 
-# Interval mapping for Yahoo Finance
-INTERVAL_MAP = {
-    "1m": "1m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
+# Map our interval strings to pandas resample frequency
+# Valid pandas offset strings: https://pandas.pydata.org/docs/user_guide/timeseries.html#offset-aliases
+RESAMPLE_MAP = {
+    "1m": "1min",
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
     "1h": "1h",
-    "4h": "1h",   # Yahoo doesn't have 4h; we'll resample
-    "1d": "1d",
-    "1w": "1wk",
-    "1mn": "1mo",
+    "4h": "4h",
+    "1d": "1D",
+    "1w": "1W",
+    "1mn": "1MS",
 }
 
-# Dukascopy period codes (in minutes)
-DUKAS_PERIOD = {
-    "1m": 1,
-    "5m": 5,
-    "15m": 15,
-    "30m": 30,
-    "1h": 60,
-    "4h": 240,
-    "1d": 1440,
-    "1w": 10080,
-    "1mn": 43200,
+# For Yahoo fallback
+YAHOO_MAP = {
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X",
+    "AUDUSD": "AUDUSD=X",
+    "USDCAD": "USDCAD=X",
+    "USDCHF": "USDCHF=X",
+    "NZDUSD": "NZDUSD=X",
+    "EURGBP": "EURGBP=X",
+    "EURJPY": "EURJPY=X",
+    "GBPJPY": "GBPJPY=X",
 }
-
-# ---------- Helper: generate synthetic data ----------
-def generate_synthetic_data(symbol, start_date, end_date, interval, seed=42):
-    """Generate a random walk price series as ultimate fallback."""
-    np.random.seed(seed)
-    start = pd.to_datetime(start_date)
-    end = pd.to_datetime(end_date)
-    
-    # Valid pandas frequency strings (lowercase)
-    freq_map = {
-        "1m": "min",      # minute
-        "5m": "5min",
-        "15m": "15min",
-        "30m": "30min",
-        "1h": "h",        # hour (lowercase)
-        "4h": "4h",
-        "1d": "D",
-        "1w": "W",
-        "1mn": "MS",      # month start
-    }
-    freq = freq_map.get(interval, "h")
-    
-    # Create date range
-    idx = pd.date_range(start=start, end=end, freq=freq)
-    if len(idx) == 0:
-        # If no bars, create 100 bars starting from start
-        idx = pd.date_range(start=start, periods=100, freq=freq)
-    
-    # Random walk
-    n = len(idx)
-    returns = np.random.normal(0, 0.01, n)
-    price = 1.0 + np.cumsum(returns)
-    price = np.maximum(price, 0.5)  # floor
-    
-    df = pd.DataFrame({
-        'open': price * (1 + np.random.normal(0, 0.001, n)),
-        'high': price * (1 + np.abs(np.random.normal(0, 0.002, n))),
-        'low': price * (1 - np.abs(np.random.normal(0, 0.002, n))),
-        'close': price * (1 + np.random.normal(0, 0.001, n)),
-    }, index=idx)
-    
-    # Ensure high is max, low is min
-    df['high'] = df[['open', 'high', 'close']].max(axis=1)
-    df['low'] = df[['open', 'low', 'close']].min(axis=1)
-    df = df[['open', 'high', 'low', 'close']]
-    return df
 
 # ---------- Cache helpers ----------
 def get_cache_key(symbol, start, end, interval):
@@ -127,81 +70,103 @@ def save_to_cache(key, df):
     with open(path, 'wb') as f:
         pickle.dump(df, f)
 
-# ---------- Dukascopy fetcher ----------
-def fetch_dukascopy(symbol, start_date, end_date, interval):
-    """Attempt to fetch from Dukascopy's public data feed."""
-    instrument = INSTRUMENT_MAP.get(symbol.upper())
+# ---------- Dukascopy Direct HTTP (primary) ----------
+def fetch_dukascopy_direct(symbol, start_date, end_date, interval, retries=3):
+    """
+    Fetch OHLC data directly from Dukascopy's public tick CSV endpoint.
+    Downloads tick data for each day and resamples to the requested interval.
+    Returns DataFrame or None on failure.
+    """
+    instrument = PAIR_MAP.get(symbol.upper())
     if not instrument:
         return None
     
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    instrument_code = instrument.replace("/", "")  # "EUR/USD" → "EURUSD"
     
-    # For 4h, we need 1h data
-    if interval == "4h":
-        fetch_interval = "1h"
-    else:
-        fetch_interval = interval
+    # We'll collect daily DataFrames and then concatenate
+    all_dfs = []
+    current = start_dt
+    total_days = (end_dt - start_dt).days + 1
     
-    period = DUKAS_PERIOD.get(fetch_interval)
-    if period is None:
-        return None
+    # Show progress (we can log to console)
+    print(f"Fetching {symbol} from Dukascopy: {total_days} days...")
     
-    instrument_code = instrument.replace("/", "")
-    
-    all_data = []
-    current_date = start_dt
-    while current_date <= end_dt:
-        year = current_date.year
-        month = str(current_date.month).zfill(2)
-        day = str(current_date.day).zfill(2)
+    while current <= end_dt:
+        year = current.year
+        month = str(current.month).zfill(2)
+        day = str(current.day).zfill(2)
         
-        csv_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
-        try:
-            response = requests.get(csv_url, timeout=10)
-            if response.status_code == 200:
-                df_day = pd.read_csv(io.StringIO(response.text), 
-                                    names=['timestamp', 'bid', 'ask', 'volume'])
-                df_day['timestamp'] = pd.to_datetime(df_day['timestamp'], unit='ms')
-                if not df_day.empty:
+        # Dukascopy tick CSV URL (for the whole day)
+        url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
+        
+        df_day = None
+        for attempt in range(retries):
+            try:
+                resp = requests.get(url, timeout=15)
+                if resp.status_code == 200:
+                    # Parse CSV: columns are timestamp, bid, ask, volume (all in ms)
+                    df_day = pd.read_csv(io.StringIO(resp.text), 
+                                        names=['timestamp', 'bid', 'ask', 'volume'])
+                    df_day['timestamp'] = pd.to_datetime(df_day['timestamp'], unit='ms')
                     df_day.set_index('timestamp', inplace=True)
-                    # Resample to requested interval
-                    ohlc = df_day['bid'].resample(fetch_interval).ohlc()
+                    # Resample to the target interval
+                    # Use the 'bid' price as representative; you could also use (bid+ask)/2
+                    ohlc = df_day['bid'].resample(RESAMPLE_MAP[interval]).ohlc()
                     ohlc.columns = ['open', 'high', 'low', 'close']
-                    all_data.append(ohlc)
-        except Exception:
-            pass
-        current_date += timedelta(days=1)
+                    # Drop rows with NaN (bars with no data)
+                    ohlc = ohlc.dropna()
+                    if not ohlc.empty:
+                        all_dfs.append(ohlc)
+                    break  # success, exit retry loop
+                else:
+                    # 404 often means no data for that day (weekend/holiday) – skip silently
+                    break
+            except Exception as e:
+                print(f"  Attempt {attempt+1} failed for {year}-{month}-{day}: {e}")
+                time.sleep(1)  # wait before retry
+        # Move to next day
+        current += timedelta(days=1)
     
-    if not all_data:
+    if not all_dfs:
         return None
     
-    df = pd.concat(all_data)
+    # Concatenate all days
+    df = pd.concat(all_dfs)
+    # Remove duplicate indices (in case of overlapping)
     df = df[~df.index.duplicated(keep='first')]
     df = df.sort_index()
+    # Drop any remaining NaN
     df = df.dropna()
     
-    # If we requested 4h, resample to 4h
-    if interval == "4h" and not df.empty:
-        df = df.resample('4h').agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last'
-        }).dropna()
+    # If interval is 4h, we already resampled to 4h directly from ticks,
+    # but the tick data is resampled to 4h correctly.
+    # However, if you prefer to resample from 1h, that's also possible.
+    # Here we resample directly from ticks to the target, which is fine.
     
-    return df if not df.empty else None
+    return df
 
-# ---------- Yahoo fetcher ----------
+# ---------- Yahoo fallback (for daily and above) ----------
 def fetch_yahoo(symbol, start_date, end_date, interval):
-    ticker = PAIR_MAP.get(symbol.upper())
+    ticker = YAHOO_MAP.get(symbol.upper())
     if not ticker:
         return None
     
-    yf_interval = INTERVAL_MAP.get(interval, "1d")
+    # Yahoo intervals: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo
+    yf_interval_map = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "4h": "1h",      # Yahoo doesn't have 4h; will resample later
+        "1d": "1d",
+        "1w": "1wk",
+        "1mn": "1mo",
+    }
+    yf_interval = yf_interval_map.get(interval, "1d")
     resample_4h = (interval == "4h")
-    if resample_4h:
-        yf_interval = "1h"
     
     try:
         df = yf.download(
@@ -218,17 +183,13 @@ def fetch_yahoo(symbol, start_date, end_date, interval):
     if df is None or df.empty:
         return None
     
-    required_cols = ['Open', 'High', 'Low', 'Close']
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        return None
-    
     df.columns = [c.lower() for c in df.columns]
-    df = df[['open', 'high', 'low', 'close']]
+    required = ['open', 'high', 'low', 'close']
+    if not all(c in df.columns for c in required):
+        return None
+    df = df[required]
     
     if resample_4h:
-        if len(df) < 4:
-            return None
         df = df.resample('4h').agg({
             'open': 'first',
             'high': 'max',
@@ -236,35 +197,73 @@ def fetch_yahoo(symbol, start_date, end_date, interval):
             'close': 'last'
         }).dropna()
     
-    df = df.dropna()
-    return df if not df.empty else None
+    return df.dropna()
+
+# ---------- Synthetic fallback ----------
+def generate_synthetic_data(symbol, start_date, end_date, interval, seed=42):
+    np.random.seed(seed)
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    
+    freq_map = {
+        "1m": "min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "1h": "h",
+        "4h": "4h",
+        "1d": "D",
+        "1w": "W",
+        "1mn": "MS",
+    }
+    freq = freq_map.get(interval, "h")
+    idx = pd.date_range(start=start, end=end, freq=freq)
+    if len(idx) == 0:
+        idx = pd.date_range(start=start, periods=100, freq=freq)
+    
+    n = len(idx)
+    returns = np.random.normal(0, 0.01, n)
+    price = 1.0 + np.cumsum(returns)
+    price = np.maximum(price, 0.5)
+    
+    df = pd.DataFrame({
+        'open': price * (1 + np.random.normal(0, 0.001, n)),
+        'high': price * (1 + np.abs(np.random.normal(0, 0.002, n))),
+        'low': price * (1 - np.abs(np.random.normal(0, 0.002, n))),
+        'close': price * (1 + np.random.normal(0, 0.001, n)),
+    }, index=idx)
+    df['high'] = df[['open', 'high', 'close']].max(axis=1)
+    df['low'] = df[['open', 'low', 'close']].min(axis=1)
+    return df[['open', 'high', 'low', 'close']]
 
 # ---------- Main hybrid function ----------
 def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     """
-    Hybrid data fetcher – tries multiple sources, guarantees data.
-    Returns (DataFrame, provider_name, was_fallback).
-    provider_name can be: 'dukascopy', 'yahoo', 'synthetic'
+    Hybrid data fetcher:
+    1. Try Dukascopy direct HTTP (primary)
+    2. If fails, try Yahoo Finance (fallback)
+    3. If still fails, generate synthetic data (ultimate fallback)
+    Returns: (DataFrame, provider_name, was_fallback)
     """
-    # Check cache first
+    # Check cache
     key = get_cache_key(symbol, start_date, end_date, interval)
     cached = load_from_cache(key)
     if cached is not None:
         return cached, 'cache', False
     
-    # Try Dukascopy (best for intraday)
-    df = fetch_dukascopy(symbol, start_date, end_date, interval)
+    # 1. Dukascopy Direct HTTP
+    df = fetch_dukascopy_direct(symbol, start_date, end_date, interval)
     if df is not None and not df.empty:
         save_to_cache(key, df)
         return df, 'dukascopy', False
     
-    # Try Yahoo Finance
+    # 2. Yahoo Finance (fallback)
     df = fetch_yahoo(symbol, start_date, end_date, interval)
     if df is not None and not df.empty:
         save_to_cache(key, df)
         return df, 'yahoo', False
     
-    # Ultimate fallback: synthetic data
+    # 3. Synthetic (ultimate fallback)
     df = generate_synthetic_data(symbol, start_date, end_date, interval)
     save_to_cache(key, df)
     return df, 'synthetic', True
