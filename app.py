@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import datetime
 import streamlit_authenticator as stauth
 from backtest_engine import run_backtest_from_files, run_wfv_from_files, run_demo_backtest
-from db import init_db, register_user, login_user, save_backtest_result, get_user_results, get_session
+from db import init_db, register_user, login_user, save_backtest_result, get_user_results
 
 # --- Initialize database ---
 init_db()
@@ -23,6 +22,10 @@ if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "page" not in st.session_state:
     st.session_state.page = "main"
+if "uploaded_data" not in st.session_state:
+    st.session_state.uploaded_data = {}
+if "demo_mode" not in st.session_state:
+    st.session_state.demo_mode = False
 
 # ============================================================
 # LOGIN / SIGNUP PAGE
@@ -85,16 +88,14 @@ def main_app():
         show_history()
 
 def show_backtest():
-    # --- Your existing backtest interface (with demo mode, parameters, etc.) ---
-    # I'll include a condensed version; you can copy your full backtest code here.
     st.title("🚀 QuantForge – Backtest Engine")
     st.markdown("Upload your CSV data, define parameters, and get AI‑powered analysis.")
 
-    # --- Demo mode banner (same as before) ---
+    # --- Demo mode banner ---
     if st.session_state.get("demo_mode", False):
-        st.info("📂 **Demo Mode Active** – please upload your CSV files and set your parameters.")
+        st.info("📂 **Demo Mode Active** – this uses a simple MA crossover strategy for illustration only.")
 
-    # --- Sidebar parameters (same as before) ---
+    # --- Sidebar parameters ---
     with st.sidebar:
         st.header("⚡ Presets")
         if st.button("🎯 Load Demo Preset (MA Crossover)"):
@@ -119,6 +120,7 @@ def show_backtest():
         risk_cents = st.number_input("Risk per Trade (cents)", min_value=1, value=70, key="risk_cents")
         withdrawal_pct_first = st.slider("Withdrawal % – First Year", 0, 100, 70, key="withdrawal_pct_first")
         withdrawal_pct_rest = st.slider("Withdrawal % – Rest", 0, 100, 100, key="withdrawal_pct_rest")
+        reset_balance_monthly = st.checkbox("Reset balance to starting capital each month", value=True, key="reset_balance")
 
         st.markdown("---")
 
@@ -131,23 +133,24 @@ def show_backtest():
 
         st.subheader("Upload Data")
         uploaded_files = st.file_uploader("Upload your CSV files (BID and ASK)", type=["csv"], accept_multiple_files=True)
-        if not uploaded_files:
-            st.info("👈 Please upload your CSV files.")
-            st.stop()
+        if uploaded_files:
+            # Replace session state with new uploads (prevents accumulation)
+            st.session_state.uploaded_data = {file.name: file for file in uploaded_files}
+            st.success(f"{len(uploaded_files)} files uploaded.")
+        else:
+            # Optionally, keep existing files if none uploaded? We'll keep as is.
+            pass
 
-        # Store uploaded files in session state
-        if "uploaded_data" not in st.session_state:
+        if st.button("Clear Files"):
             st.session_state.uploaded_data = {}
-        for file in uploaded_files:
-            if file.name not in st.session_state.uploaded_data:
-                st.session_state.uploaded_data[file.name] = file
-        st.success(f"{len(st.session_state.uploaded_data)} files uploaded.")
+            st.rerun()
 
         st.markdown("---")
 
         st.subheader("EA Export")
         ea_magic = st.number_input("Magic Number", value=123457, step=1)
         if st.button("Download EA (MQL4)"):
+            # Placeholder – you can integrate actual EA generation here
             ea_code = "// Your EA code here (use the full code from your validated EA)"
             st.download_button("Download EA (MQL4)", data=ea_code, file_name=f"EA_Risk{risk_cents}_Magic{ea_magic}.mq4", mime="text/plain")
 
@@ -171,9 +174,10 @@ def show_backtest():
                                 start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
                                 end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
                                 demo_sl=demo_sl,
-                                demo_tp=demo_tp
+                                demo_tp=demo_tp,
+                                reset_balance_monthly=reset_balance_monthly  # demo ignores but passed
                             )
-                            st.info("ℹ️ Demo backtest complete.")
+                            st.info("ℹ️ Demo backtest complete (simple MA crossover).")
                         else:
                             results, trades_df, monthly_df = run_backtest_from_files(
                                 st.session_state.uploaded_data,
@@ -182,36 +186,60 @@ def show_backtest():
                                 withdrawal_pct_rest=withdrawal_pct_rest,
                                 start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
                                 end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
+                                reset_balance_monthly=reset_balance_monthly
                             )
 
                         if results is None:
                             st.warning("No trades in the selected period.")
                         else:
                             st.success("Backtest complete!")
-                            # Display results (metrics, equity curve, etc.)
-                            # (I'll include the display code from your previous version)
+                            # Add risk_cents to results dict for saving
+                            results['risk_cents'] = risk_cents
+
+                            # --- Display Metrics ---
                             col1, col2, col3, col4 = st.columns(4)
                             col1.metric("Total Trades", results['total_trades'])
                             col2.metric("Win Rate", f"{results['win_rate']:.1f}%")
                             col3.metric("Profit Factor", f"{results['profit_factor']:.2f}")
                             col4.metric("Avg Monthly P&L (USD)", f"${results['avg_monthly_usd']:.2f}")
 
-                            # ... (equity curve, tables, download buttons)
-                            # (You can copy the display code from your previous app.py)
+                            # --- Equity Curve ---
+                            if trades_df is not None and not trades_df.empty:
+                                trades_df['cumulative'] = trades_df['pnl_cents'].cumsum()
+                                fig_equity = go.Figure()
+                                fig_equity.add_trace(go.Scatter(x=trades_df['exit_bar'], y=trades_df['cumulative'],
+                                                                 mode='lines', name='Equity (cents)'))
+                                fig_equity.update_layout(title='Equity Curve', xaxis_title='Bar Index', yaxis_title='Cumulative P&L (cents)')
+                                st.plotly_chart(fig_equity, use_container_width=True)
 
-                            # Save result to database
+                            # --- Trade Log ---
+                            st.subheader("Trade Log")
+                            st.dataframe(trades_df[['pair', 'type', 'entry', 'exit', 'pnl_cents', 'lot', 'reason']])
+
+                            # --- Monthly Performance ---
+                            if monthly_df:
+                                st.subheader("Monthly Performance")
+                                monthly_df_display = pd.DataFrame(monthly_df)
+                                st.dataframe(monthly_df_display)
+
+                                # Monthly P&L bar chart
+                                fig_monthly = go.Figure()
+                                fig_monthly.add_trace(go.Bar(x=monthly_df_display['Month'], y=monthly_df_display['Monthly P&L (cents)'],
+                                                             name='Monthly P&L'))
+                                fig_monthly.update_layout(title='Monthly P&L', xaxis_title='Month', yaxis_title='P&L (cents)')
+                                st.plotly_chart(fig_monthly, use_container_width=True)
+
+                            # --- Download buttons ---
+                            csv_trades = trades_df.to_csv(index=False).encode('utf-8')
+                            st.download_button("Download Trades (CSV)", data=csv_trades, file_name="trades.csv", mime="text/csv")
+                            if monthly_df:
+                                csv_monthly = pd.DataFrame(monthly_df).to_csv(index=False).encode('utf-8')
+                                st.download_button("Download Monthly (CSV)", data=csv_monthly, file_name="monthly.csv", mime="text/csv")
+
+                            # --- Save to database ---
                             save_success = save_backtest_result(
                                 st.session_state.user_id,
-                                {
-                                    'risk_cents': risk_cents,
-                                    'total_trades': results['total_trades'],
-                                    'win_rate': results['win_rate'],
-                                    'profit_factor': results['profit_factor'],
-                                    'total_withdrawn_usd': results['total_withdrawn_usd'],
-                                    'avg_monthly_usd': results['avg_monthly_usd'],
-                                    'max_dd_cents': results['max_dd_cents'],
-                                    'max_dd_percent': results['max_dd_percent']
-                                },
+                                results,
                                 trades_df,
                                 monthly_df,
                                 start_date.strftime("%Y-%m-%d"),
@@ -227,6 +255,7 @@ def show_backtest():
         st.markdown("---")
 
         st.subheader("Walk-Forward Validation (WFV)")
+        block_years = st.number_input("Block size (years)", min_value=1, value=5, step=1, key="block_years")
         if st.button("Run WFV"):
             if len(st.session_state.uploaded_data) == 0:
                 st.error("Please upload CSV files first.")
@@ -238,6 +267,8 @@ def show_backtest():
                             risk_cents=risk_cents,
                             withdrawal_pct_first=withdrawal_pct_first,
                             withdrawal_pct_rest=withdrawal_pct_rest,
+                            block_years=block_years,
+                            reset_balance_monthly=reset_balance_monthly
                         )
                         if not block_results or all(b['Trades'] == 0 for b in block_results):
                             st.warning("No trades in any block.")
