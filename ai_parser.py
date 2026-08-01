@@ -4,6 +4,7 @@ import openai
 from google import genai
 from groq import Groq
 from huggingface_hub import InferenceClient
+import requests
 
 # ---------- Base class code ----------
 BASE_CLASS_CODE = """
@@ -83,73 +84,73 @@ def parse_response(content):
 def call_gemini(description, api_key):
     client = genai.Client(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Try gemini-1.5-flash if 2.0 is exhausted
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=full_prompt,
-        )
-    except Exception:
-        # Fallback to 1.5-flash (often has separate quota)
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=full_prompt,
-        )
-    return parse_response(response.text)
+    # Try multiple models in order
+    models = ["gemini-2.0-flash", "gemini-1.0-pro", "gemini-1.5-pro"]
+    last_error = None
+    for model in models:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=full_prompt,
+            )
+            return parse_response(response.text)
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
 
-# ---------- Provider 2: Groq (updated model) ----------
+# ---------- Provider 2: Groq (using stable Mixtral) ----------
 def call_groq(description, api_key):
     client = Groq(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Use a currently supported model
+    # Use Mixtral – it’s stable and not decommissioned
     response = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",   # updated from decommissioned model
+        model="mixtral-8x7b-32768",
         messages=[{"role": "user", "content": full_prompt}],
         temperature=0.2,
         response_format={"type": "json_object"}
     )
     return parse_response(response.choices[0].message.content)
 
-# ---------- Provider 3: Hugging Face (fixed method) ----------
+# ---------- Provider 3: Hugging Face (using chat_completion) ----------
 def call_huggingface(description, api_token):
     client = InferenceClient(token=api_token)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Use the correct method: text_generation
-    response = client.text_generation(
+    # Use chat_completion with a model that supports it
+    response = client.chat_completion(
         model="meta-llama/Llama-3.2-3B-Instruct",
-        prompt=full_prompt,
-        max_new_tokens=2048,
+        messages=[{"role": "user", "content": full_prompt}],
+        max_tokens=2048,
         temperature=0.2,
-        return_full_text=False
+        response_format={"type": "json_object"}  # works for some models
     )
-    # Response is a string directly
-    content = response
+    content = response.choices[0].message.content
     return parse_response(content)
 
-# ---------- Provider 4: GLM-5.2 (Z.ai) – fixed endpoint and model ----------
+# ---------- Provider 4: GLM (Zhipu AI official endpoint) ----------
 def call_glm(description, api_key):
+    # Use Zhipu's official endpoint (bigmodel.cn) – Z.ai keys work here
     client = openai.OpenAI(
         api_key=api_key,
-        base_url="https://api.z.ai/v1"   # keep as is
+        base_url="https://open.bigmodel.cn/api/paas/v4/"
     )
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Try different model names – "glm-4-plus" is the current stable one
-    try:
-        response = client.chat.completions.create(
-            model="glm-4-plus",          # updated from "glm-5.2"
-            messages=[{"role": "user", "content": full_prompt}],
-            temperature=0.2,
-            response_format={"type": "json_object"}
-        )
-    except Exception:
-        # Fallback to "glm-4-flash" if plus fails
-        response = client.chat.completions.create(
-            model="glm-4-flash",
-            messages=[{"role": "user", "content": full_prompt}],
-            temperature=0.2,
-            response_format={"type": "json_object"}
-        )
-    return parse_response(response.choices[0].message.content)
+    # Try glm-4-plus first, then glm-4-flash
+    models = ["glm-4-plus", "glm-4-flash"]
+    last_error = None
+    for model in models:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": full_prompt}],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            return parse_response(response.choices[0].message.content)
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
 
 # ---------- Main function ----------
 def parse_strategy_full(description, api_key=None):
@@ -188,16 +189,16 @@ def parse_strategy_full(description, api_key=None):
     else:
         errors.append("Hugging Face: API token not set")
 
-    # 4. GLM-5.2 (Z.ai)
+    # 4. GLM (Zhipu)
     glm_key = os.getenv("ZAI_API_KEY")
     if glm_key:
         try:
             return call_glm(description, glm_key)
         except Exception as e:
-            errors.append(f"GLM-5.2: {e}")
-            print(f"GLM-5.2 failed: {e}")
+            errors.append(f"GLM: {e}")
+            print(f"GLM failed: {e}")
     else:
-        errors.append("GLM-5.2: API key not set")
+        errors.append("GLM: API key not set")
 
     # If all fail
     raise RuntimeError(
