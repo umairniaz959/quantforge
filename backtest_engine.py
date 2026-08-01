@@ -757,7 +757,7 @@ def run_generated_strategy(uploaded_files, user_code, params,
     # Ensure column names are lowercase
     data.columns = [col.lower() for col in data.columns]
     # Forward fill NaN values to avoid None comparisons
-    data = data.fillna(method='ffill').fillna(method='bfill')
+    data = data.ffill().bfill()   # updated to avoid deprecation warning
 
     # Execute user code
     local_scope = {'Strategy': Strategy, 'pd': pd, 'np': np}
