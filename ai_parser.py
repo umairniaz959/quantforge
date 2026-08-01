@@ -4,7 +4,6 @@ import openai
 from google import genai
 from groq import Groq
 from huggingface_hub import InferenceClient
-import requests
 
 # ---------- Base class code ----------
 BASE_CLASS_CODE = """
@@ -80,12 +79,17 @@ def parse_response(content):
     data["params"].setdefault("indicators", [])
     return data
 
-# ---------- Provider 1: Gemini ----------
+# ---------- Provider 1: Gemini (updated models) ----------
 def call_gemini(description, api_key):
     client = genai.Client(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Try multiple models in order
-    models = ["gemini-2.0-flash", "gemini-1.0-pro", "gemini-1.5-pro"]
+    # Try latest stable models first
+    models = [
+        "gemini-3.6-flash",      # Latest GA model [reference:19]
+        "gemini-3.5-flash-lite", # Fastest, lowest-cost [reference:20]
+        "gemini-2.5-pro",        # Most advanced [reference:21]
+        "gemini-2.5-flash"       # Good balance [reference:22]
+    ]
     last_error = None
     for model in models:
         try:
@@ -99,44 +103,74 @@ def call_gemini(description, api_key):
             continue
     raise last_error
 
-# ---------- Provider 2: Groq (using stable Mixtral) ----------
+# ---------- Provider 2: Groq (updated models) ----------
 def call_groq(description, api_key):
     client = Groq(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Use Mixtral – it’s stable and not decommissioned
-    response = client.chat.completions.create(
-        model="mixtral-8x7b-32768",
-        messages=[{"role": "user", "content": full_prompt}],
-        temperature=0.2,
-        response_format={"type": "json_object"}
-    )
-    return parse_response(response.choices[0].message.content)
+    # Try currently supported models [reference:23][reference:24]
+    models = [
+        "openai/gpt-oss-120b",     # Strong reasoning, recommended replacement [reference:25]
+        "llama-4-maverick",        # Meta's latest [reference:26]
+        "llama-4-scout",           # Meta's latest [reference:27]
+        "qwen/qwen3.6-27b"         # Recommended replacement for Qwen3-32B [reference:28]
+    ]
+    last_error = None
+    for model in models:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": full_prompt}],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            return parse_response(response.choices[0].message.content)
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
 
-# ---------- Provider 3: Hugging Face (using chat_completion) ----------
+# ---------- Provider 3: Hugging Face (free inference) ----------
 def call_huggingface(description, api_token):
     client = InferenceClient(token=api_token)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Use chat_completion with a model that supports it
-    response = client.chat_completion(
-        model="meta-llama/Llama-3.2-3B-Instruct",
-        messages=[{"role": "user", "content": full_prompt}],
-        max_tokens=2048,
-        temperature=0.2,
-        response_format={"type": "json_object"}  # works for some models
-    )
-    content = response.choices[0].message.content
-    return parse_response(content)
+    # Use the serverless inference API with a supported model
+    # For free tier, try smaller models first
+    models = [
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "microsoft/Phi-3-mini-4k-instruct"
+    ]
+    last_error = None
+    for model in models:
+        try:
+            response = client.chat_completion(
+                model=model,
+                messages=[{"role": "user", "content": full_prompt}],
+                max_tokens=2048,
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content
+            return parse_response(content)
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
 
-# ---------- Provider 4: GLM (Zhipu AI official endpoint) ----------
+# ---------- Provider 4: Zhipu AI / GLM (updated endpoint) ----------
 def call_glm(description, api_key):
-    # Use Zhipu's official endpoint (bigmodel.cn) – Z.ai keys work here
+    # Use Zhipu AI's official endpoint [reference:29]
     client = openai.OpenAI(
         api_key=api_key,
         base_url="https://open.bigmodel.cn/api/paas/v4/"
     )
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    # Try glm-4-plus first, then glm-4-flash
-    models = ["glm-4-plus", "glm-4-flash"]
+    # Try latest GLM models [reference:30][reference:31]
+    models = [
+        "glm-5.1",      # Latest flagship [reference:32]
+        "glm-5-turbo",  # Fast version
+        "glm-4.7",      # Latest GLM-4 series [reference:33]
+        "glm-4.6"       # Stable fallback [reference:34]
+    ]
     last_error = None
     for model in models:
         try:
@@ -189,7 +223,7 @@ def parse_strategy_full(description, api_key=None):
     else:
         errors.append("Hugging Face: API token not set")
 
-    # 4. GLM (Zhipu)
+    # 4. Zhipu AI / GLM
     glm_key = os.getenv("ZAI_API_KEY")
     if glm_key:
         try:
