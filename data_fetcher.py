@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from dukascopy import Dukascopy
 
 # Mapping from our interval strings to Dukascopy periods
