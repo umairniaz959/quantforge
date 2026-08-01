@@ -2,9 +2,14 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import datetime
-from ai_parser import parse_strategy
 import streamlit_authenticator as stauth
-from backtest_engine import run_backtest_from_files, run_wfv_from_files, run_demo_backtest, run_custom_strategy
+from backtest_engine import (
+    run_backtest_from_files,
+    run_wfv_from_files,
+    run_demo_backtest,
+    run_custom_strategy
+)
+from ai_parser import parse_strategy
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
 
 # --- Initialize database ---
@@ -27,6 +32,10 @@ if "uploaded_data" not in st.session_state:
     st.session_state.uploaded_data = {}
 if "demo_mode" not in st.session_state:
     st.session_state.demo_mode = False
+if "strategy_params" not in st.session_state:
+    st.session_state.strategy_params = None
+if "uploaded_data_custom" not in st.session_state:
+    st.session_state.uploaded_data_custom = {}
 
 # ============================================================
 # LOGIN / SIGNUP PAGE
@@ -82,11 +91,17 @@ def main_app():
 
     # Navigation
     page = st.sidebar.radio("Go to", ["Backtest", "My History", "Strategy Studio"])
+
     if page == "Backtest":
         show_backtest()
-    else:
+    elif page == "My History":
         show_history()
+    else:
+        show_strategy_studio()
 
+# ============================================================
+# BACKTEST PAGE (existing)
+# ============================================================
 def show_backtest():
     st.title("🚀 QuantForge – Backtest Engine")
     st.markdown("Upload your CSV data, define parameters, and get AI‑powered analysis.")
@@ -175,7 +190,7 @@ def show_backtest():
                                 end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
                                 demo_sl=demo_sl,
                                 demo_tp=demo_tp,
-                                reset_balance_monthly=reset_balance_monthly  # demo ignores but passed
+                                reset_balance_monthly=reset_balance_monthly
                             )
                             st.info("ℹ️ Demo backtest complete (simple MA crossover).")
                         else:
@@ -283,6 +298,9 @@ def show_backtest():
                     except Exception as e:
                         st.error(f"Error: {e}")
 
+# ============================================================
+# HISTORY PAGE
+# ============================================================
 def show_history():
     st.title("📜 My Backtest History")
     results = get_user_results(st.session_state.user_id)
@@ -297,7 +315,11 @@ def show_history():
                 st.write(f"**Avg Monthly:** ${r.avg_monthly_usd:.2f}")
                 st.write(f"**Max DD:** ${r.max_dd_cents/100:.2f} ({r.max_dd_percent:.2f}%)")
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
-                def show_strategy_studio():
+
+# ============================================================
+# STRATEGY STUDIO PAGE (NEW)
+# ============================================================
+def show_strategy_studio():
     st.title("🧪 Strategy Studio – Build Your Own Strategy")
     st.markdown("Describe your strategy in plain English, and let AI extract the rules.")
     
@@ -318,7 +340,7 @@ def show_history():
                 except Exception as e:
                     st.error(f"Error parsing: {e}")
     
-    if "strategy_params" in st.session_state:
+    if "strategy_params" in st.session_state and st.session_state.strategy_params:
         params = st.session_state.strategy_params
         with st.expander("Edit Parameters", expanded=True):
             # Display editable fields
