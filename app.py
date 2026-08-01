@@ -317,7 +317,7 @@ def show_history():
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# STRATEGY STUDIO PAGE (with full navigation)
+# STRATEGY STUDIO PAGE (with full navigation and debug)
 # ============================================================
 def reset_studio():
     """Reset all studio-related session state to start over."""
@@ -464,23 +464,27 @@ def show_strategy_studio():
             else:
                 with st.spinner("Running backtest..."):
                     try:
-                        results, trades_df, monthly_df = run_generated_strategy(
+                        # --- This is the line that changed: capture debug_info ---
+                        results, trades_df, debug_info = run_generated_strategy(
                             st.session_state.uploaded_data_custom,
                             st.session_state.studio_data["code"],
                             params=params,
                             start_date=None,
                             end_date=None
                         )
+                        # ---------------------------------------------------------
+
+                        # --- Handle results ---
                         if results is None:
-    st.warning("No trades generated. Try adjusting parameters.")
-    # Show debug info if available
-    if debug_info:
-        with st.expander("🔍 Debug Info (strategy code & data sample)"):
-            st.code(debug_info.get("strategy_code", "No code"), language="python")
-            st.write("Data shape:", debug_info.get("data_shape"))
-            st.write("Columns:", debug_info.get("columns"))
-            st.dataframe(pd.DataFrame(debug_info.get("data_head", {})))
-            st.write(debug_info.get("message", ""))
+                            st.warning("No trades generated. Try adjusting parameters.")
+                            # Show debug info if available
+                            if debug_info:
+                                with st.expander("🔍 Debug Info (strategy code & data sample)"):
+                                    st.code(debug_info.get("strategy_code", "No code"), language="python")
+                                    st.write("Data shape:", debug_info.get("data_shape"))
+                                    st.write("Columns:", debug_info.get("columns"))
+                                    st.dataframe(pd.DataFrame(debug_info.get("data_head", {})))
+                                    st.write(debug_info.get("message", ""))
                         else:
                             st.success("Backtest complete!")
                             col1, col2, col3, col4 = st.columns(4)
