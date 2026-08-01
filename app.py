@@ -1,9 +1,18 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import datetime
+import os
+from dotenv import load_dotenv
 from backtest_engine import (
     run_backtest_from_files,
     run_wfv_from_files,
     run_demo_backtest,
-    run_generated_strategy   # <-- only this new one
+    run_generated_strategy      # <-- corrected import
 )
+from ai_parser import parse_strategy
+from db import init_db, register_user, login_user, save_backtest_result, get_user_results
+
 # Load .env file (for local development)
 load_dotenv()
 
@@ -303,7 +312,7 @@ def show_history():
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# STRATEGY STUDIO PAGE (new – AI code generation)
+# STRATEGY STUDIO PAGE (NEW – code generation)
 # ============================================================
 def show_strategy_studio():
     st.title("🧪 Strategy Studio – Build Your Own Strategy")
@@ -326,10 +335,8 @@ def show_strategy_studio():
     if st.session_state.get("generated_code"):
         st.subheader("Generated Strategy Code (editable)")
         edited_code = st.text_area("", value=st.session_state.generated_code, height=300)
-        # We'll store the edited version in session state for later use
         st.session_state.generated_code = edited_code
 
-        # File upload for custom backtest
         st.subheader("Upload Data for Custom Backtest")
         uploaded_files = st.file_uploader("Upload CSV files (BID and ASK)", type=["csv"], accept_multiple_files=True, key="code_upload")
         if uploaded_files:
@@ -342,11 +349,10 @@ def show_strategy_studio():
             else:
                 with st.spinner("Running custom strategy..."):
                     try:
-                        # Use the edited code
                         results, trades_df, monthly_df = run_generated_strategy(
                             st.session_state.uploaded_data_custom,
                             st.session_state.generated_code,
-                            risk_cents=70,  # You can add a number input for risk
+                            risk_cents=70,
                             start_date=None,
                             end_date=None
                         )
