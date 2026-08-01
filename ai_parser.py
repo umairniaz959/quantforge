@@ -116,3 +116,6 @@ Return ONLY a valid JSON object, no extra text.
 
     except Exception as e:
         raise RuntimeError(f"Failed to generate strategy code with Gemini: {e}")
+
+# ✅ Backward compatibility alias for older imports
+parse_strategy = parse_strategy_full
