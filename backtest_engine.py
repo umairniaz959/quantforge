@@ -756,6 +756,8 @@ def run_generated_strategy(uploaded_files, user_code, params,
     }, index=master_index)
     # Ensure column names are lowercase
     data.columns = [col.lower() for col in data.columns]
+    # Forward fill NaN values to avoid None comparisons
+    data = data.fillna(method='ffill').fillna(method='bfill')
 
     # Execute user code
     local_scope = {'Strategy': Strategy, 'pd': pd, 'np': np}
@@ -782,13 +784,19 @@ def run_generated_strategy(uploaded_files, user_code, params,
     tp_price = 0.0
 
     for i in range(len(data)):
-        strategy.next(i)
+        try:
+            strategy.next(i)
+        except Exception as e:
+            # If the strategy crashes, skip this bar and continue
+            print(f"Error in strategy.next() at bar {i}: {e}")
+            continue
+
         current_pos = strategy.position
         if current_pos != 0 and not in_position:
             entry_price = data['close'].iloc[i]
             entry_type = 'BUY' if current_pos == 1 else 'SELL'
-            sl_price = strategy.sl_price if strategy.sl_price else 0.0
-            tp_price = strategy.tp_price if strategy.tp_price else 0.0
+            sl_price = strategy.sl_price if strategy.sl_price is not None else 0.0
+            tp_price = strategy.tp_price if strategy.tp_price is not None else 0.0
             in_position = True
             entry_bar = i
         elif current_pos == 0 and in_position:
