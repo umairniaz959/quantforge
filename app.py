@@ -472,7 +472,15 @@ def show_strategy_studio():
                             end_date=None
                         )
                         if results is None:
-                            st.warning("No trades generated. Try adjusting parameters.")
+    st.warning("No trades generated. Try adjusting parameters.")
+    # Show debug info if available
+    if debug_info:
+        with st.expander("🔍 Debug Info (strategy code & data sample)"):
+            st.code(debug_info.get("strategy_code", "No code"), language="python")
+            st.write("Data shape:", debug_info.get("data_shape"))
+            st.write("Columns:", debug_info.get("columns"))
+            st.dataframe(pd.DataFrame(debug_info.get("data_head", {})))
+            st.write(debug_info.get("message", ""))
                         else:
                             st.success("Backtest complete!")
                             col1, col2, col3, col4 = st.columns(4)
