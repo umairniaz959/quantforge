@@ -1,9 +1,7 @@
 import os
+import json
 import google.generativeai as genai
 
-# --------------------------------------------------------------
-# Base class code used in the prompt (no triple quotes inside)
-# --------------------------------------------------------------
 BASE_CLASS_CODE = """
 class Strategy:
     def __init__(self, data):
@@ -13,6 +11,9 @@ class Strategy:
         self.sl_price = 0.0
         self.tp_price = 0.0
         self.trades = []
+        self.stop_loss_pips = 20
+        self.take_profit_pips = 40
+        self.risk_per_trade = 2.0
     def init(self):
         pass
     def next(self, i):
@@ -20,73 +21,84 @@ class Strategy:
     def buy(self, price, sl=None, tp=None):
         self.position = 1
         self.entry_price = price
-        self.sl_price = sl
-        self.tp_price = tp
+        self.sl_price = sl if sl is not None else price - self.stop_loss_pips * 0.0001
+        self.tp_price = tp if tp is not None else price + self.take_profit_pips * 0.0001
     def sell(self, price, sl=None, tp=None):
         self.position = -1
         self.entry_price = price
-        self.sl_price = sl
-        self.tp_price = tp
+        self.sl_price = sl if sl is not None else price + self.stop_loss_pips * 0.0001
+        self.tp_price = tp if tp is not None else price - self.take_profit_pips * 0.0001
     def close(self, price):
         if self.position != 0:
             self.trades.append({'entry': self.entry_price, 'exit': price, 'type': 'BUY' if self.position == 1 else 'SELL', 'pnl': (price - self.entry_price) if self.position == 1 else (self.entry_price - price)})
             self.position = 0
 """
 
-# --------------------------------------------------------------
-# Main parser
-# --------------------------------------------------------------
-def parse_strategy(text, api_key=None):
+def parse_strategy_full(description, api_key=None):
     if api_key is None:
         api_key = os.getenv("GEMINI_API_KEY")
-    if api_key:
-        try:
-            return generate_strategy_code(text, api_key)
-        except Exception as e:
-            print(f"Gemini code generation failed: {e}")
-            return fallback_code()
-    else:
-        return fallback_code()
-
-# --------------------------------------------------------------
-# Gemini code generator
-# --------------------------------------------------------------
-def generate_strategy_code(description, api_key):
+    if not api_key:
+        return fallback_full(description)
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
-    # This prompt string has no internal triple quotes – the base class is inserted via placeholder.
-    system_prompt = """
-You are an expert trading strategy coder. Given a user description, generate a complete Python class that inherits from the Strategy base class.
+    system_prompt = f"""
+You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
+
+1. "code": a complete Python class `UserStrategy` that inherits from the provided `Strategy` base class.
+   - Use `self.stop_loss_pips` and `self.take_profit_pips` (which will be set before the strategy runs) for stop loss and take profit values.
+   - Use `self.risk_per_trade` (percentage) for position sizing.
+2. "summary": a plain‑English summary of what the strategy does (max 3 sentences).
+3. "params": an object with keys:
+   - "stop_loss_pips": number (if mentioned, else 20)
+   - "take_profit_pips": number (if mentioned, else 40)
+   - "risk_per_trade": number (percentage, e.g., 2.0)
+   - "indicators": list of objects each with {{"name": "sma", "period": 14, "source": "close"}}
 
 The base class is:
 
-{base_class}
+{BASE_CLASS_CODE}
 
-Now, write a new class named `UserStrategy` that overrides `init` and `next`.  
-Inside `init`, you can pre‑compute indicators using pandas on `self.data` (which is a DataFrame with columns: 'open','high','low','close').  
-Inside `next`, use `self.data.iloc[i]` to access current bar; use `self.buy()`, `self.sell()`, `self.close()` to trade.  
-Only use standard libraries: pandas, numpy.
-
-The user description is: {description}
-
-Return ONLY the Python code for the `UserStrategy` class, no explanations, no markdown.
+Return ONLY a valid JSON object, no extra text.
 """
-    full_prompt = system_prompt.format(base_class=BASE_CLASS_CODE, description=description)
+    full_prompt = system_prompt + "\nUser description: " + description
     response = model.generate_content(full_prompt)
-    code = response.text.strip()
-    # Remove markdown code fences if present
-    if code.startswith("```python"):
-        code = code[9:]
-    if code.startswith("```"):
-        code = code[3:]
-    if code.endswith("```"):
-        code = code[:-3]
-    return code.strip()
+    content = response.text.strip()
+    try:
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        data = json.loads(content)
+        data.setdefault("code", fallback_code())
+        data.setdefault("summary", "Strategy generated.")
+        data.setdefault("params", {})
+        data["params"].setdefault("stop_loss_pips", 20)
+        data["params"].setdefault("take_profit_pips", 40)
+        data["params"].setdefault("risk_per_trade", 2.0)
+        data["params"].setdefault("indicators", [])
+        return data
+    except Exception as e:
+        print(f"JSON parsing error: {e}\nResponse: {content}")
+        return fallback_full(description)
 
-# --------------------------------------------------------------
-# Fallback code (simple MA crossover)
-# --------------------------------------------------------------
+def fallback_full(description):
+    return {
+        "code": fallback_code(),
+        "summary": "This strategy uses a 5‑period SMA crossing above/below a 20‑period SMA to trigger buy/sell signals.",
+        "params": {
+            "stop_loss_pips": 20,
+            "take_profit_pips": 40,
+            "risk_per_trade": 2.0,
+            "indicators": [
+                {"name": "sma", "period": 5, "source": "close"},
+                {"name": "sma", "period": 20, "source": "close"}
+            ]
+        }
+    }
+
 def fallback_code():
     return """
 class UserStrategy(Strategy):
@@ -98,9 +110,9 @@ class UserStrategy(Strategy):
             return
         if self.position == 0:
             if self.data['sma5'].iloc[i] > self.data['sma20'].iloc[i] and self.data['sma5'].iloc[i-1] <= self.data['sma20'].iloc[i-1]:
-                self.buy(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]-20*0.0001, tp=self.data['close'].iloc[i]+40*0.0001)
+                self.buy(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]-self.stop_loss_pips*0.0001, tp=self.data['close'].iloc[i]+self.take_profit_pips*0.0001)
             elif self.data['sma5'].iloc[i] < self.data['sma20'].iloc[i] and self.data['sma5'].iloc[i-1] >= self.data['sma20'].iloc[i-1]:
-                self.sell(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]+20*0.0001, tp=self.data['close'].iloc[i]-40*0.0001)
+                self.sell(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]+self.stop_loss_pips*0.0001, tp=self.data['close'].iloc[i]-self.take_profit_pips*0.0001)
         else:
             pass
 """
