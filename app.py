@@ -319,6 +319,15 @@ def show_history():
 # ============================================================
 # STRATEGY STUDIO PAGE
 # ============================================================
+def reset_studio():
+    """Reset all studio-related session state to start over."""
+    st.session_state.studio_step = "describe"
+    st.session_state.studio_description = ""
+    st.session_state.studio_data = None
+    st.session_state.studio_confirmed = False
+    st.session_state.studio_params = {}
+    st.session_state.uploaded_data_custom = {}
+
 def show_strategy_studio():
     st.title("🧪 Strategy Studio – Build Your Own Strategy")
     st.markdown("Describe your strategy in plain English, and we'll code it for you.")
@@ -350,15 +359,20 @@ def show_strategy_studio():
         st.subheader("📋 Strategy Summary")
         st.write(data["summary"])
         st.markdown("---")
-        col1, col2 = st.columns(2)
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
         with col1:
-            if st.button("✅ Yes, that's correct"):
-                st.session_state.studio_confirmed = True
-                st.session_state.studio_step = "tune"
+            if st.button("← Back to describe"):
+                reset_studio()
                 st.rerun()
         with col2:
             if st.button("❌ No, refine it"):
                 st.session_state.studio_step = "refine"
+                st.rerun()
+        with col3:
+            if st.button("✅ Yes, that's correct"):
+                st.session_state.studio_confirmed = True
+                st.session_state.studio_step = "tune"
                 st.rerun()
 
     # ---- STEP 3: Refine ----
@@ -366,10 +380,11 @@ def show_strategy_studio():
         st.subheader("✏️ Refine Your Strategy")
         st.write("The strategy summary above didn't match what you wanted. Please describe the changes:")
 
-        # --- Back button to go to confirmation without changes ---
-        if st.button("← Back to summary"):
-            st.session_state.studio_step = "confirm"
-            st.rerun()
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            if st.button("← Back to summary"):
+                st.session_state.studio_step = "confirm"
+                st.rerun()
 
         with st.form("refine_form"):
             additional = st.text_area("What needs to be changed or added?", height=100)
@@ -424,6 +439,17 @@ def show_strategy_studio():
         params["take_profit_pips"] = new_tp
         params["risk_per_trade"] = new_risk
         st.session_state.studio_params = params
+
+        # Navigation buttons
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("← Back to confirm"):
+                st.session_state.studio_step = "confirm"
+                st.rerun()
+        with col3:
+            if st.button("🔄 Start Over"):
+                reset_studio()
+                st.rerun()
 
         # Upload data
         st.subheader("📂 Upload Data for Backtest")
