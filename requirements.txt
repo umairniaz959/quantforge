@@ -7,4 +7,4 @@ plotly
 openai
 python-dotenv
 google-generativeai
-dukascopy-tick
+dukascopy
