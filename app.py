@@ -3,23 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import datetime
 import os
-# ---------- Load secrets (local .env + Streamlit Cloud) ----------
-load_dotenv()   # For local development
-
-# If on Streamlit Cloud, override with secrets from the dashboard
-if hasattr(st, 'secrets'):
-    for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "HF_API_TOKEN", "ZAI_API_KEY"]:
-        if key in st.secrets:
-            os.environ[key] = st.secrets[key]
-
-# ---- Debug: show which keys are set (only in dev, remove later) ----
-st.sidebar.subheader("🔑 API Key Status")
-for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "HF_API_TOKEN", "ZAI_API_KEY"]:
-    if os.getenv(key):
-        st.sidebar.success(f"✅ {key} is set")
-    else:
-        st.sidebar.error(f"❌ {key} is NOT set")
-from dotenv import load_dotenv
+from dotenv import load_dotenv   # ✅ this line was missing
 from backtest_engine import (
     run_backtest_from_files,
     run_wfv_from_files,
@@ -38,6 +22,14 @@ if hasattr(st, 'secrets'):
     for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "HF_API_TOKEN", "ZAI_API_KEY"]:
         if key in st.secrets:
             os.environ[key] = st.secrets[key]
+
+# ---- Debug: show which keys are set (only in dev, remove later) ----
+st.sidebar.subheader("🔑 API Key Status")
+for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "HF_API_TOKEN", "ZAI_API_KEY"]:
+    if os.getenv(key):
+        st.sidebar.success(f"✅ {key} is set")
+    else:
+        st.sidebar.error(f"❌ {key} is NOT set")
 
 # --- Initialize database ---
 init_db()
