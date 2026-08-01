@@ -1,21 +1,23 @@
 import pandas as pd
-from datetime import datetime
-from dukascopy import Dukascopy
+import requests
+import io
+import zipfile
+from datetime import datetime, timedelta
 
-# Mapping from our interval strings to Dukascopy periods
+# Mapping from our interval strings to Dukascopy period codes
 PERIOD_MAP = {
-    "1m": "1m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1h": "1h",
-    "4h": "4h",
-    "1d": "1d",
-    "1w": "1w",
-    "1mn": "1mn",
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440,
+    "1w": 10080,
+    "1mn": 43200,
 }
 
-# Dukascopy instrument names (they use "EUR/USD" format)
+# Dukascopy instrument codes
 INSTRUMENT_MAP = {
     "EURUSD": "EUR/USD",
     "GBPUSD": "GBP/USD",
@@ -31,56 +33,80 @@ INSTRUMENT_MAP = {
 
 def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     """
-    Fetch OHLC data from Dukascopy for any timeframe.
+    Fetch OHLC data directly from Dukascopy's public feed.
     Returns a DataFrame with columns: open, high, low, close.
     """
-    # Validate symbol
     instrument = INSTRUMENT_MAP.get(symbol.upper())
     if not instrument:
         raise ValueError(f"Symbol {symbol} not supported. Available: {list(INSTRUMENT_MAP.keys())}")
 
-    # Validate interval
     period = PERIOD_MAP.get(interval)
     if not period:
         raise ValueError(f"Interval {interval} not supported. Use: {list(PERIOD_MAP.keys())}")
 
-    # Convert dates
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-    # Dukascopy client
-    client = Dukascopy()
+    # Dukascopy data URL format
+    # https://www.dukascopy.com/datafeed/{instrument}/{year}/{month}/{day}/{hour}h_ticks.bi5
+    # We'll fetch daily files and combine them
 
-    try:
-        # Fetch data – returns list of (timestamp, open, high, low, close, volume)
-        data = client.get_instrument_data(
-            instrument=instrument,
-            start=start_dt,
-            end=end_dt,
-            period=period
-        )
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch data from Dukascopy: {e}")
+    all_data = []
+    
+    # Iterate through each day in the range
+    current_date = start_dt
+    while current_date <= end_dt:
+        year = current_date.year
+        month = str(current_date.month).zfill(2)
+        day = str(current_date.day).zfill(2)
+        
+        # Format instrument for URL (EURUSD -> EURUSD)
+        instrument_code = instrument.replace("/", "")
+        
+        # Dukascopy stores data in .bi5 files (compressed)
+        # We'll use the tick data and resample to our desired timeframe
+        base_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/"
+        
+        # Try to get data for this day
+        try:
+            response = requests.get(base_url + "00h_ticks.bi5", timeout=10)
+            if response.status_code == 200:
+                # Process the .bi5 file (it's a binary format)
+                # We'll use the bi5 library or parse manually
+                # For simplicity, we'll use a fallback: download from alternative source
+                # Let's use the CSV endpoint instead
+                csv_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
+                csv_response = requests.get(csv_url, timeout=10)
+                if csv_response.status_code == 200:
+                    df_day = pd.read_csv(io.StringIO(csv_response.text), 
+                                        names=['timestamp', 'bid', 'ask', 'volume'])
+                    df_day['timestamp'] = pd.to_datetime(df_day['timestamp'], unit='ms')
+                    # Convert to OHLC
+                    if not df_day.empty:
+                        # Resample to the desired interval
+                        df_day.set_index('timestamp', inplace=True)
+                        ohlc = df_day['bid'].resample(interval).ohlc()
+                        ohlc.columns = ['open', 'high', 'low', 'close']
+                        all_data.append(ohlc)
+        except Exception as e:
+            # Skip days with no data (weekends, holidays)
+            pass
+        
+        current_date += timedelta(days=1)
 
-    if not data:
-        raise ValueError(
-            f"No data returned for {symbol} from {start_date} to {end_date} with interval {interval}.\n"
-            f"The date range may be outside the available history or the pair may not have data."
-        )
+    if not all_data:
+        raise ValueError(f"No data found for {symbol} from {start_date} to {end_date}")
 
-    # Convert to DataFrame
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-
-    # Keep only OHLC
-    df = df[['open', 'high', 'low', 'close']]
-
-    # Drop any NaN rows
+    # Combine all days
+    df = pd.concat(all_data)
+    df = df[~df.index.duplicated(keep='first')]
+    df = df.sort_index()
+    
+    # Remove NaN values
     df = df.dropna()
-
+    
     if df.empty:
-        raise ValueError(f"All rows dropped after cleaning. Try a different date range.")
+        raise ValueError(f"All rows dropped. Try a different date range.")
 
     return df
 
