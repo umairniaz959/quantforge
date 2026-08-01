@@ -42,25 +42,22 @@ def parse_strategy_full(description, api_key=None):
 
     try:
         genai.configure(api_key=api_key)
-        # List all models
+        # List all models and pick the first one that works
         all_models = genai.list_models()
-        # Filter for those that support generateContent and contain "gemini"
         candidates = [
             m.name for m in all_models
             if "gemini" in m.name.lower() and "generateContent" in m.supported_generation_methods
         ]
-        # Exclude known problematic or deprecated models
-        excluded_substrings = ["2.5", "2.0", "1.0-pro"]  # some might be deprecated; you can adjust
-        filtered = [m for m in candidates if not any(x in m for x in excluded_substrings)]
-        if not filtered:
-            # If filtering removes everything, use the original candidates (maybe they'll work)
-            filtered = candidates
-        if not filtered:
-            raise RuntimeError(f"No Gemini models available. Available: {candidates}")
+        if not candidates:
+            raise RuntimeError(f"No Gemini models available. Available: {all_models}")
 
-        # Try each model until one works
+        # Try models in order (most stable first)
+        model_order = ["gemini-1.0-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
+        # Keep only those that are available
+        models_to_try = [m for m in model_order if m in candidates] + [m for m in candidates if m not in model_order]
+
         last_error = None
-        for model_name in filtered:
+        for model_name in models_to_try:
             try:
                 print(f"Trying model: {model_name}")
                 model = genai.GenerativeModel(model_name)
@@ -81,6 +78,8 @@ You are an expert trading strategy coder. Given a user description, generate thr
 The base class is:
 
 {BASE_CLASS_CODE}
+
+Important: The `data` DataFrame passed to your strategy has columns named **'open'**, **'high'**, **'low'**, **'close'** – all lowercase. Use these exact names in your code. Use `self.data['close']` for close prices.
 
 Return ONLY a valid JSON object, no extra text.
 """
@@ -104,18 +103,16 @@ Return ONLY a valid JSON object, no extra text.
                 data["params"].setdefault("take_profit_pips", 40)
                 data["params"].setdefault("risk_per_trade", 2.0)
                 data["params"].setdefault("indicators", [])
-                # Success, return
                 return data
             except Exception as e:
                 last_error = e
                 print(f"Model {model_name} failed: {e}")
-                continue  # try next
+                continue
 
-        # If we get here, all models failed
-        raise RuntimeError(f"All available Gemini models failed. Last error: {last_error}. Tried: {filtered}")
+        raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
 
     except Exception as e:
         raise RuntimeError(f"Failed to generate strategy code with Gemini: {e}")
 
-# ✅ Backward compatibility alias for older imports
+# Backward compatibility alias
 parse_strategy = parse_strategy_full
