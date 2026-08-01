@@ -8,11 +8,11 @@ from backtest_engine import (
     run_backtest_from_files,
     run_wfv_from_files,
     run_demo_backtest,
-    run_generated_strategy_from_df   # <-- new function (add to backtest_engine.py)
+    run_generated_strategy_from_df
 )
 from ai_parser import parse_strategy_full
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
-from data_fetcher import fetch_forex_data, get_available_pairs   # <-- new module
+from data_fetcher import fetch_forex_data, get_available_pairs
 
 # Load .env file (for local development)
 load_dotenv()
@@ -318,7 +318,7 @@ def show_history():
                 st.caption(f"Saved on: {r.created_at.strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================================
-# STRATEGY STUDIO PAGE (with Dukascopy data fetch)
+# STRATEGY STUDIO PAGE (with Dukascopy/Yahoo Finance data fetch)
 # ============================================================
 def reset_studio():
     """Reset all studio-related session state to start over."""
@@ -452,7 +452,7 @@ def show_strategy_studio():
                 reset_studio()
                 st.rerun()
 
-        # ---- NEW: Data selection (Dukascopy) ----
+        # ---- Data selection (Yahoo Finance) ----
         st.subheader("📊 Select Data for Backtest")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -462,10 +462,16 @@ def show_strategy_studio():
         with col3:
             end_date = st.date_input("End Date", value=pd.to_datetime("2024-01-01"), key="studio_end")
 
-        interval = st.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4, key="studio_interval")
+        interval = st.selectbox(
+            "Timeframe",
+            ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mn"],
+            index=4,
+            key="studio_interval",
+            help="Note: Intraday data (1m to 1h) is limited to the last 730 days by Yahoo Finance."
+        )
 
         if st.button("📥 Fetch Data & Run Backtest"):
-            with st.spinner(f"Fetching {pair} data from Dukascopy..."):
+            with st.spinner(f"Fetching {pair} data from Yahoo Finance..."):
                 try:
                     data = fetch_forex_data(
                         pair,
@@ -509,7 +515,11 @@ def show_strategy_studio():
                             csv_trades = trades_df.to_csv(index=False).encode('utf-8')
                             st.download_button("Download Trades (CSV)", data=csv_trades, file_name="studio_trades.csv", mime="text/csv")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Data fetch failed: {e}")
+                    st.info("💡 **Suggestions:**\n"
+                            "- For intraday data (1h, 30m, etc.), keep date range **within 730 days**.\n"
+                            "- Use **daily (1d)** or longer intervals for longer date ranges.\n"
+                            "- Try a different **currency pair**.")
 
 # ============================================================
 # ENTRY POINT
