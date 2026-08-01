@@ -22,7 +22,7 @@ INTERVAL_MAP = {
     "15m": "15m",
     "30m": "30m",
     "1h": "1h",
-    "4h": "1h",   # Yahoo doesn't have 4h; we'll resample
+    "4h": "1h",   # Yahoo doesn't have 4h; we fetch 1h and resample
     "1d": "1d",
     "1w": "1wk",
     "1mn": "1mo",
@@ -41,18 +41,23 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     days = (end_dt - start_dt).days
 
+    # Map interval
     yf_interval = INTERVAL_MAP.get(interval, "1h")
     resample_4h = (interval == "4h")
     if resample_4h:
         yf_interval = "1h"
 
-    # Intraday interval limit check
-    intraday_intervals = ["1m", "5m", "15m", "30m", "1h"]
-    if interval in intraday_intervals and days > 730:
-        raise ValueError(
-            f"Yahoo Finance only allows up to 730 days of intraday data. "
-            f"Your range is {days} days. Please shorten the date range or use daily/weekly data."
-        )
+    # Check if the date range is too far back for intraday data
+    # Yahoo only allows intraday data within the last 730 days from today
+    if yf_interval in ["1m", "5m", "15m", "30m", "1h"]:
+        today = datetime.now()
+        oldest_allowed = today - timedelta(days=730)
+        if end_dt < oldest_allowed:
+            raise ValueError(
+                f"Yahoo Finance only provides intraday data for the last 730 days. "
+                f"Your range ends on {end_date}, which is before {oldest_allowed.strftime('%Y-%m-%d')}. "
+                f"Please use daily or weekly data for older ranges."
+            )
 
     try:
         df = yf.download(
@@ -66,18 +71,29 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     except Exception as e:
         raise RuntimeError(f"Failed to fetch data from Yahoo Finance: {e}")
 
-    # ---- CRITICAL FIX: check type and content ----
+    # ---- Handle different return types ----
     if df is None:
         raise ValueError(f"No data returned for {symbol} from {start_date} to {end_date} with interval {interval}. "
-                         f"Try a different interval or date range.")
-    
+                         f"The ticker may not be available or the date range is invalid.")
+
     if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"Unexpected data type from Yahoo Finance: {type(df)}. "
-                        f"This usually means the ticker '{ticker}' is not available or the request failed.")
-    
+        # If it's a tuple, it might be an error from yfinance
+        if isinstance(df, tuple):
+            raise TypeError(f"Yahoo Finance returned an error tuple: {df}. "
+                            f"The ticker '{ticker}' may be delisted or invalid. "
+                            f"Try a different currency pair.")
+        else:
+            raise TypeError(f"Unexpected data type from Yahoo Finance: {type(df)}. "
+                            f"Try a different interval or date range.")
+
     if df.empty:
-        raise ValueError(f"Empty DataFrame for {symbol} from {start_date} to {end_date} with interval {interval}. "
-                         f"Try a different interval or date range.")
+        # For 4h, we used 1h, which might be too short for the range; fallback suggestion.
+        if interval == "4h":
+            raise ValueError(f"No 1-hour data found for {symbol} from {start_date} to {end_date} to create 4-hour bars. "
+                             f"Try using '1d' (daily) or a different date range.")
+        else:
+            raise ValueError(f"Empty DataFrame for {symbol} from {start_date} to {end_date} with interval {interval}. "
+                             f"Try a different interval or date range.")
 
     # Ensure required columns exist
     required_cols = ['Open', 'High', 'Low', 'Close']
@@ -96,8 +112,14 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
             'low': 'min',
             'close': 'last'
         }).dropna()
+        if df.empty:
+            raise ValueError(f"No 4-hour bars could be created from 1-hour data. "
+                             f"Try a different date range or use daily data.")
 
     df = df.dropna()
+    if df.empty:
+        raise ValueError(f"All rows were dropped after cleaning. Try a different date range or interval.")
+
     return df
 
 def get_available_pairs():
