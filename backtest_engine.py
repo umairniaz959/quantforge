@@ -178,7 +178,7 @@ def get_spread_pips(pair_name, bid_price, ask_price):
     return spread_pips, limit_pips
 
 # --------------------------------------------------------------
-# Core simulation (validated strategy)
+# Core simulation (validated strategy) – unchanged
 # --------------------------------------------------------------
 def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
                              risk_cents=RISK_CENTS,
