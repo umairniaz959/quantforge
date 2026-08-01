@@ -22,7 +22,7 @@ INTERVAL_MAP = {
     "15m": "15m",
     "30m": "30m",
     "1h": "1h",
-    "4h": "1h",   # Yahoo doesn't have 4h; we fetch 1h and resample
+    "4h": "1h",   # Yahoo doesn't have 4h; we'll resample
     "1d": "1d",
     "1w": "1wk",
     "1mn": "1mo",
@@ -30,13 +30,13 @@ INTERVAL_MAP = {
 
 def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     """
-    Fetch OHLC data from Yahoo Finance with robust error handling.
+    Fetch OHLC data from Yahoo Finance using yf.Ticker (reliable, never returns tuple).
     """
     ticker = PAIR_MAP.get(symbol.upper())
     if not ticker:
         raise ValueError(f"Symbol {symbol} not supported. Available: {list(PAIR_MAP.keys())}")
 
-    # Convert dates to datetime
+    # Convert dates
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     days = (end_dt - start_dt).days
@@ -47,8 +47,7 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     if resample_4h:
         yf_interval = "1h"
 
-    # ---- Intraday data limit (730 days) ----
-    # This applies only if we are requesting an intraday interval (including 4h, which uses 1h)
+    # Intraday limit check
     intraday_intervals = ["1m", "5m", "15m", "30m", "1h"]
     if yf_interval in intraday_intervals:
         today = datetime.now()
@@ -60,56 +59,38 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
                 f"Please use daily (1d) or weekly data for older ranges."
             )
 
-    # ---- Download data ----
+    # ---- Use yf.Ticker – always returns DataFrame ----
     try:
-        df = yf.download(
-            tickers=ticker,
+        ticker_obj = yf.Ticker(ticker)
+        df = ticker_obj.history(
             start=start_date,
             end=end_date,
             interval=yf_interval,
-            progress=False,
             auto_adjust=False
         )
     except Exception as e:
         raise RuntimeError(f"Failed to fetch data from Yahoo Finance: {e}")
 
-    # ---- Check return type ----
-    # yfinance sometimes returns a tuple (None, error) or (DataFrame, error)
-    if isinstance(df, tuple):
-        # Unpack if possible
-        if len(df) == 2 and df[0] is None and df[1] is not None:
-            # This is the (None, error) case
-            raise RuntimeError(f"Yahoo Finance returned an error: {df[1]}")
-        else:
-            raise TypeError(f"Unexpected tuple from Yahoo Finance: {df}. "
-                            f"The ticker '{ticker}' may be delisted or invalid. "
-                            f"Try a different currency pair or use daily data.")
+    # ---- Check result ----
+    if df is None or df.empty:
+        raise ValueError(f"No data returned for {symbol} from {start_date} to {end_date} with interval {interval}. "
+                         f"Try a different interval or date range.")
 
-    if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"Unexpected data type from Yahoo Finance: {type(df)}. "
-                        f"Try a different interval or date range.")
-
-    if df.empty:
-        # For 4h, we used 1h, which might be too short for the range; fallback suggestion.
-        if interval == "4h":
-            raise ValueError(f"No 1-hour data found for {symbol} from {start_date} to {end_date} to create 4-hour bars. "
-                             f"Try using '1d' (daily) or a different date range.")
-        else:
-            raise ValueError(f"Empty DataFrame for {symbol} from {start_date} to {end_date} with interval {interval}. "
-                             f"Try a different interval or date range.")
-
-    # ---- Ensure required columns exist ----
+    # Ensure required columns exist
     required_cols = ['Open', 'High', 'Low', 'Close']
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Data missing required columns: {missing}. Found columns: {df.columns.tolist()}")
 
-    # ---- Clean ----
+    # Clean and select
     df.columns = [c.lower() for c in df.columns]
     df = df[['open', 'high', 'low', 'close']]
 
-    # ---- Resample 4h if needed ----
+    # Resample 4h if needed
     if resample_4h:
+        # Ensure we have enough data to resample
+        if len(df) < 4:
+            raise ValueError(f"Not enough 1-hour data to create 4-hour bars. Try a longer date range.")
         df = df.resample('4H').agg({
             'open': 'first',
             'high': 'max',
@@ -117,10 +98,9 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
             'close': 'last'
         }).dropna()
         if df.empty:
-            raise ValueError(f"No 4-hour bars could be created from 1-hour data. "
-                             f"Try a different date range or use daily data.")
+            raise ValueError(f"No 4-hour bars could be created. Try a different date range.")
 
-    # ---- Final cleaning ----
+    # Drop any remaining NaN
     df = df.dropna()
     if df.empty:
         raise ValueError(f"All rows were dropped after cleaning. Try a different date range or interval.")
