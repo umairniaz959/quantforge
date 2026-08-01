@@ -1,14 +1,7 @@
 import os
 import google.generativeai as genai
 
-# --------------------------------------------------------------
-# Main function: generate strategy code from description
-# --------------------------------------------------------------
 def parse_strategy(text, api_key=None):
-    """
-    Takes a plain English strategy description and returns a Python class code string.
-    Uses Gemini if API key is available, otherwise falls back to a simple MA crossover.
-    """
     if api_key is None:
         api_key = os.getenv("GEMINI_API_KEY")
     if api_key:
@@ -18,17 +11,14 @@ def parse_strategy(text, api_key=None):
             print(f"Gemini code generation failed: {e}")
             return fallback_code()
     else:
-        print("No API key found. Using fallback code.")
         return fallback_code()
 
-# --------------------------------------------------------------
-# Gemini-based code generator
-# --------------------------------------------------------------
 def generate_strategy_code(description, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
-    system_prompt = f"""
+    # Use a raw string with triple single quotes to avoid escaping issues
+    system_prompt = '''
 You are an expert trading strategy coder. Given a user description, generate a complete Python class that inherits from the Strategy base class.
 
 The base class is:
@@ -58,10 +48,5 @@ class Strategy:
         self.tp_price = tp
     def close(self, price):
         if self.position != 0:
-            self.trades.append({{
-                'entry': self.entry_price,
-                'exit': price,
-                'type': 'BUY' if self.position == 1 else 'SELL',
-                'pnl': (price - self.entry_price) if self.position == 1 else (self.entry_price - price)
-            }})
+            self.trades.append({'entry': self.entry_price, 'exit': price, 'type': 'BUY' if self.position == 1 else 'SELL', 'pnl': (price - self.entry_price) if self.position == 1 else (self.entry_price - price)})
             self.position = 0
