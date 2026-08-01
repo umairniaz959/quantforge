@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 from datetime import timedelta
+from strategy_base import Strategy   # <-- import at top
 
 # --------------------------------------------------------------
-# Global settings (default values, can be overridden)
+# Global settings
 # --------------------------------------------------------------
 RISK_CENTS = 70
 STARTING_BALANCE_CENTS = 10000
@@ -27,7 +28,7 @@ MIN_LOT = 0.01
 MAX_LOT = 100.0
 
 # --------------------------------------------------------------
-# Helper functions
+# Helper functions (unchanged)
 # --------------------------------------------------------------
 def pair_files(all_files):
     bid_files = [f for f in all_files if '_ask' not in f.lower()]
@@ -94,7 +95,7 @@ def get_pip_value(pair_name, quote, price, timestamp, ref_prices, mode='triangul
     return get_pip_value_usd_triangulated(pair_name, price, timestamp, ref_prices)
 
 # --------------------------------------------------------------
-# Data loading from uploaded files
+# Data loading (unchanged)
 # --------------------------------------------------------------
 def load_uploaded_data(uploaded_files, start_date=None, end_date=None):
     all_files = list(uploaded_files.keys())
@@ -123,7 +124,6 @@ def load_uploaded_data(uploaded_files, start_date=None, end_date=None):
                     df[date_col] = pd.to_datetime(df[date_col])
                     df.set_index(date_col, inplace=True)
                 else:
-                    # Fallback: try to parse first column as datetime
                     try:
                         df.index = pd.to_datetime(df.iloc[:, 0])
                         df = df.iloc[:, 1:]
@@ -159,14 +159,12 @@ def load_uploaded_data(uploaded_files, start_date=None, end_date=None):
         bid_arrays[pair_name] = bid_dfs[pair_name].reindex(master_index).to_numpy(dtype=np.float64)
         ask_arrays[pair_name] = ask_dfs[pair_name].reindex(master_index).to_numpy(dtype=np.float64)
 
-    # Build reference prices for all USD-based pairs to enable triangulation
     ref_prices = {}
     for pair_name in bid_dfs:
         base, quote = get_pair_currencies(pair_name)
         if base == 'USD' or quote == 'USD':
             s = bid_dfs[pair_name]['close'].reindex(master_index)
             ref_prices[pair_name] = {ts: v for ts, v in zip(master_index, s.values) if not np.isnan(v)}
-    # Additional: for cross pairs we rely on these USD pairs being present
 
     return list(bid_arrays.keys()), master_index, bid_arrays, ask_arrays, ref_prices
 
@@ -180,7 +178,7 @@ def get_spread_pips(pair_name, bid_price, ask_price):
     return spread_pips, limit_pips
 
 # --------------------------------------------------------------
-# Core simulation (runs on already loaded arrays) – Validated Strategy
+# Core simulation (validated strategy)
 # --------------------------------------------------------------
 def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
                              risk_cents=RISK_CENTS,
@@ -228,9 +226,8 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
             pip_size = pip_sizes[pair_name]
             point_size = point_sizes[pair_name]
             tol = TOUCH_TOLERANCE_PIPS * pip_size
-            ts = master_index[i]
 
-            # ---- Manage OPEN TRADES ----
+            # Manage OPEN TRADES
             still_open = []
             for tr in open_trades[pair_name]:
                 closed = False
@@ -253,7 +250,6 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                     pip_pnl = (exit_price - tr['entry']) / pip_size if tr['type'] == 'BUY' \
                         else (tr['entry'] - exit_price) / pip_size
                     close_ref_price = cb if tr['type'] == 'BUY' else ca
-                    # --- FIX: use triangulated pip value ---
                     pip_val = get_pip_value(pair_name, quote, close_ref_price, ts, ref_prices, 'triangulated')
                     if pip_val is None:
                         pip_val = tr['pip_val_entry']
@@ -293,7 +289,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                 still_open.append(tr)
             open_trades[pair_name] = still_open
 
-            # ---- Fill PENDING ORDERS ----
+            # Fill PENDING ORDERS
             still_pending = []
             for po in pending_orders[pair_name]:
                 if i - po['place_bar'] > LIMIT_EXPIRY_BARS:
@@ -329,7 +325,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                     still_pending.append(po)
             pending_orders[pair_name] = still_pending
 
-            # ---- Process patterns ----
+            # Process patterns (same as before)
             for pat in patterns[pair_name]:
                 if pat['state'] == 0:
                     if cb < pat['zone_low'] or cb > pat['zone_high']:
@@ -371,7 +367,6 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                                 pat['state'] = 5
                                 continue
 
-                            # --- FIX: use triangulated pip value ---
                             pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
                             if pip_val is None:
                                 pat['state'] = 5
@@ -403,7 +398,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                         else:
                             pat['state'] = 5
 
-            # ---- Detect new patterns ----
+            # Detect new patterns
             o2, h2, l2, c2 = arr_b[i - 2]
             o1, h1, l1, c1 = arr_b[i - 1]
             if hb < l2:
@@ -419,7 +414,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
 
             patterns[pair_name] = [p for p in patterns[pair_name] if p['state'] not in (3, 4, 5)]
 
-        # ---- End of month ----
+        # End of month
         if current_month != month_key:
             month_pnl = balance_cents - month_start_balance
             monthly_pnl_list.append(month_pnl)
@@ -431,7 +426,6 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                 wd_pct = withdrawal_pct_rest
 
             if reset_balance_monthly:
-                # Original behavior: withdraw and reset to starting capital
                 if month_pnl > 0:
                     withdraw_amount = int(month_pnl * wd_pct / 100)
                     total_withdrawn_cents += withdraw_amount
@@ -442,14 +436,12 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                     remaining_profit = month_pnl
                     balance_cents = STARTING_BALANCE_CENTS + remaining_profit
             else:
-                # Cumulative: withdraw but do not reset balance
                 if month_pnl > 0:
                     withdraw_amount = int(month_pnl * wd_pct / 100)
                     total_withdrawn_cents += withdraw_amount
-                    balance_cents -= withdraw_amount  # we already have the profit in balance
+                    balance_cents -= withdraw_amount
                 else:
                     withdraw_amount = 0
-                # balance stays as is (no reset)
 
             monthly_details.append({
                 'Month': month_key,
@@ -497,7 +489,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
     return results, df_trades, monthly_details
 
 # --------------------------------------------------------------
-# Public functions for the web app (Real Strategy)
+# Public functions for the web app
 # --------------------------------------------------------------
 def run_backtest_from_files(uploaded_files, risk_cents=RISK_CENTS,
                             withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
@@ -521,7 +513,6 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
                        withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
                        block_years=5,
                        reset_balance_monthly=True):
-    # Load data to get full date range
     try:
         pair_names, master_index, _, _, _ = load_uploaded_data(uploaded_files, start_date=None, end_date=None)
     except Exception as e:
@@ -568,7 +559,7 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
             })
             combined_trades += results['total_trades']
             combined_withdrawn_usd += results['total_withdrawn_usd']
-            combined_months += 60  # approximate: each block is 5 years
+            combined_months += 60
         else:
             block_results.append({
                 'Block': label,
@@ -589,31 +580,23 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
     return block_results, summary
 
 # --------------------------------------------------------------
-# DEMO STRATEGY (Moving Average Crossover – for demonstration only)
+# DEMO STRATEGY
 # --------------------------------------------------------------
 def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
                       start_date=None, end_date=None,
                       demo_sl=20, demo_tp=40,
                       reset_balance_monthly=True):
-    """
-    A simple MA crossover strategy for demo purposes.
-    This is NOT the validated strategy – it is a teaching example.
-    """
-    # Load data
     pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
         uploaded_files, start_date, end_date
     )
     n = len(master_index)
-
-    # Process only the first pair (e.g., EURUSD) for simplicity
     if not pair_names:
         return None, None, None
     pair_name = pair_names[0]
     bid_array = bid_arrays[pair_name]
     ask_array = ask_arrays[pair_name]
-    close = bid_array[:, 3]  # close prices (BID close)
+    close = bid_array[:, 3]
 
-    # Compute MAs
     ma_fast = pd.Series(close).rolling(5).mean().values
     ma_slow = pd.Series(close).rolling(20).mean().values
 
@@ -640,12 +623,11 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
             month_peak = balance_cents
             month_max_dd_cents = 0
 
-        # Crossover detection
         buy_signal = ma_fast[i] > ma_slow[i] and ma_fast[i-1] <= ma_slow[i-1]
         sell_signal = ma_fast[i] < ma_slow[i] and ma_fast[i-1] >= ma_slow[i-1]
 
         if buy_signal:
-            entry_price = ask_array[i][3]  # ask close
+            entry_price = ask_array[i][3]
             sl_price = entry_price - demo_sl * pip_size
             tp_price = entry_price + demo_tp * pip_size
             cmd = 'BUY'
@@ -672,7 +654,7 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
                 month_max_dd_cents = dd
 
         elif sell_signal:
-            entry_price = bid_array[i][3]  # bid close
+            entry_price = bid_array[i][3]
             sl_price = entry_price + demo_sl * pip_size
             tp_price = entry_price - demo_tp * pip_size
             cmd = 'SELL'
@@ -698,7 +680,6 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
             if dd > month_max_dd_cents:
                 month_max_dd_cents = dd
 
-        # End of month (simplified: no withdrawal in demo, just record)
         if current_month != month_key:
             month_pnl = balance_cents - month_start_balance
             monthly_pnl_list.append(month_pnl)
@@ -717,7 +698,6 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
             month_peak = balance_cents
             month_max_dd_cents = 0
 
-    # Final month
     if current_month is not None:
         month_pnl = balance_cents - month_start_balance
         monthly_pnl_list.append(month_pnl)
@@ -734,7 +714,7 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
     losses = df_trades[df_trades['pnl_cents'] < 0]['pnl_cents']
     pf = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
     win_rate = (df_trades['pnl_cents'] > 0).mean() * 100
-    total_withdrawn_usd = 0  # demo strategy does not withdraw
+    total_withdrawn_usd = 0
 
     results = {
         'total_trades': len(df_trades),
@@ -746,257 +726,108 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
         'max_dd_percent': max_dd_pct,
     }
     return results, df_trades, monthly_details
-                          # ==============================================================
-# CUSTOM STRATEGY ENGINE – for user-defined strategies
+
 # ==============================================================
-
-def compute_indicators(pair_name, bid_array, ask_array, requested_indicators):
+# DYNAMIC STRATEGY EXECUTION (from generated code)
+# ==============================================================
+def run_generated_strategy(uploaded_files, user_code, risk_cents=70,
+                           start_date=None, end_date=None, initial_balance=10000):
     """
-    requested_indicators: list of dicts like {'indicator': 'sma', 'period': 14}
-    Returns dict with computed series as numpy arrays of same length as bid_array.
+    Dynamically compiles the user_code string, loads the UserStrategy class,
+    and runs it on the loaded data.
+    Returns (results_dict, trades_df, monthly_df) – similar to other backtest functions.
     """
-    import pandas as pd
-    indicators = {}
-    close = bid_array[:, 3]
-    for req in requested_indicators:
-        ind = req['indicator'].lower()
-        period = req.get('period', 14)
-        if ind == 'sma':
-            indicators[f'sma_{period}'] = pd.Series(close).rolling(period).mean().values
-        elif ind == 'ema':
-            indicators[f'ema_{period}'] = pd.Series(close).ewm(span=period, adjust=False).mean().values
-        elif ind == 'rsi':
-            delta = pd.Series(close).diff()
-            gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-            rs = gain / loss
-            indicators[f'rsi_{period}'] = (100 - (100 / (1 + rs))).values
-        # Add MACD, BB if needed later
-    return indicators
-
-def evaluate_condition(cond, idx, bid_array, ask_array, indicators, master_index):
-    """
-    Returns 'buy' or 'sell' if condition is met, else None.
-    """
-    ind = cond.get('indicator')
-    if ind == 'price':
-        val = bid_array[idx][3]  # close
-        prev_val = bid_array[idx-1][3] if idx > 0 else val
-    else:
-        key = f"{ind}_{cond.get('period', 14)}"
-        series = indicators.get(key)
-        if series is None or idx >= len(series):
-            return None
-        val = series[idx]
-        prev_val = series[idx-1] if idx > 0 else val
-    if val is None or prev_val is None:
-        return None
-    cond_type = cond.get('condition', 'above')
-    level = cond.get('level')
-    if cond_type == 'cross_above':
-        if prev_val <= level and val > level:
-            return cond.get('type', 'buy')
-    elif cond_type == 'cross_below':
-        if prev_val >= level and val < level:
-            return cond.get('type', 'sell')
-    elif cond_type == 'above':
-        if val > level:
-            return cond.get('type', 'buy')
-    elif cond_type == 'below':
-        if val < level:
-            return cond.get('type', 'sell')
-    return None
-
-def evaluate_exit(exit_cond, idx, bid_array, ask_array, indicators, sl_price, tp_price, position_type):
-    """
-    Checks indicator-based exit, returns 'buy' (to exit short) or 'sell' (to exit long).
-    Also we handle SL/TP in the main loop separately, so here we only check indicator exits.
-    """
-    if exit_cond.get('type') == 'indicator':
-        ind = exit_cond.get('indicator')
-        if ind:
-            key = f"{ind}_{exit_cond.get('period', 14)}"
-            series = indicators.get(key)
-            if series is None or idx >= len(series):
-                return None
-            val = series[idx]
-            prev_val = series[idx-1] if idx > 0 else val
-            if val is None or prev_val is None:
-                return None
-            cond_type = exit_cond.get('condition', 'below')
-            level = exit_cond.get('level')
-            # For exit: we want to close long when condition becomes true (usually "below" or "cross_below")
-            # For short, the opposite.
-            if position_type == 'BUY':
-                # Exit long: e.g., when RSI crosses below 70
-                if cond_type == 'cross_below' and prev_val >= level and val < level:
-                    return 'sell'   # sell to close
-                elif cond_type == 'below' and val < level:
-                    return 'sell'
-            elif position_type == 'SELL':
-                # Exit short: e.g., when RSI crosses above 30
-                if cond_type == 'cross_above' and prev_val <= level and val > level:
-                    return 'buy'    # buy to close
-                elif cond_type == 'above' and val > level:
-                    return 'buy'
-    return None
-
-def run_custom_strategy(uploaded_files, strategy_params, risk_cents=RISK_CENTS,
-                        start_date=None, end_date=None, reset_balance_monthly=True):
-    """
-    Runs a backtest using the strategy parameters extracted from the user description.
-    """
-    # Load data
-    try:
-        pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
-            uploaded_files, start_date, end_date
-        )
-    except Exception as e:
-        raise RuntimeError(f"Failed to load data: {e}")
-
+    # Load data using the existing loader
+    pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
+        uploaded_files, start_date, end_date
+    )
     if not pair_names:
         return None, None, None
 
-    # For simplicity, we run on the first pair only
+    # Use the first pair for simplicity
     pair_name = pair_names[0]
     bid_array = bid_arrays[pair_name]
     ask_array = ask_arrays[pair_name]
-    n = len(master_index)
 
-    # Prepare indicators
-    indicator_list = []
-    entry = strategy_params.get('entry', {})
-    if entry.get('indicator') and entry.get('indicator') != 'price':
-        indicator_list.append({'indicator': entry['indicator'], 'period': entry.get('period', 14)})
-    exit_cond = strategy_params.get('exit', {})
-    if exit_cond.get('type') == 'indicator' and exit_cond.get('indicator'):
-        indicator_list.append({'indicator': exit_cond['indicator'], 'period': exit_cond.get('period', 14)})
-    indicators = compute_indicators(pair_name, bid_array, ask_array, indicator_list)
+    # Build a DataFrame for the strategy (using bid prices for OHLC)
+    data = pd.DataFrame({
+        'open': bid_array[:, 0],
+        'high': bid_array[:, 1],
+        'low': bid_array[:, 2],
+        'close': bid_array[:, 3],
+    }, index=master_index)
+
+    # Execute the user code to define UserStrategy
+    local_scope = {'Strategy': Strategy, 'pd': pd, 'np': np}
+    try:
+        exec(user_code, local_scope)
+        UserStrategy = local_scope['UserStrategy']
+    except Exception as e:
+        raise RuntimeError(f"Error in user code: {e}")
+
+    # Instantiate and run the strategy
+    strategy = UserStrategy(data)
+    strategy.init()
 
     # Simulation variables
-    balance_cents = float(STARTING_BALANCE_CENTS)
+    balance = initial_balance
     trades_log = []
-    monthly_details = []
     in_position = False
     entry_price = 0.0
+    entry_type = None
+    entry_bar = 0
     sl_price = 0.0
     tp_price = 0.0
-    lot = 0.0
-    entry_bar = 0
-    position_type = None
-    pip_size = get_pip_size(get_pair_currencies(pair_name)[1])
-    quote = get_pair_currencies(pair_name)[1]
-    stop_loss_pips = strategy_params.get('stop_loss_pips', 20)
-    take_profit_pips = strategy_params.get('take_profit_pips', 40)
-    risk_per_trade_pct = strategy_params.get('risk_per_trade', 2.0) / 100.0
 
-    for i in range(20, n-1):
-        ts = master_index[i]
-        ob, hb, lb, cb = bid_array[i]
-        oa, ha, la, ca = ask_array[i]
+    # Loop over each bar
+    for i in range(len(data)):
+        # Call the strategy's `next` method; it may call buy/sell/close
+        strategy.next(i)
 
-        if not in_position:
-            # Check entry signal
-            signal = evaluate_condition(entry, i, bid_array, ask_array, indicators, master_index)
-            if signal:
-                # Open trade
-                if signal == 'buy':
-                    entry_price = ask_array[i][3]  # buy at ask
-                    position_type = 'BUY'
-                    sl_price = entry_price - stop_loss_pips * pip_size
-                    tp_price = entry_price + take_profit_pips * pip_size
-                else:  # sell
-                    entry_price = bid_array[i][3]  # sell at bid
-                    position_type = 'SELL'
-                    sl_price = entry_price + stop_loss_pips * pip_size
-                    tp_price = entry_price - take_profit_pips * pip_size
-
-                # Position sizing
-                pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
-                if pip_val is None:
-                    continue
-                risk_pips = stop_loss_pips
-                risk_cents_per_lot = risk_pips * pip_val * 100
-                # Use risk_per_trade_pct of balance as risk in cents
-                risk_cents_trade = balance_cents * risk_per_trade_pct
-                lot = risk_cents_trade / risk_cents_per_lot
-                # round lot
-                lot = np.floor(lot / LOT_STEP) * LOT_STEP if SIMULATE_LOT_ROUNDING else lot
-                lot = max(MIN_LOT, min(MAX_LOT, lot))
-
-                in_position = True
-                entry_bar = i
-        else:
-            # Check stop loss and take profit
-            closed = False
-            if position_type == 'BUY':
-                if lb <= sl_price:
-                    exit_price = sl_price
-                    closed = True
-                    reason = 'SL'
-                elif hb >= tp_price:
-                    exit_price = tp_price
-                    closed = True
-                    reason = 'TP'
-            else:  # SELL
-                if ha >= sl_price:
-                    exit_price = sl_price
-                    closed = True
-                    reason = 'SL'
-                elif la <= tp_price:
-                    exit_price = tp_price
-                    closed = True
-                    reason = 'TP'
-
-            # Check indicator-based exit if not closed yet
-            if not closed:
-                exit_signal = evaluate_exit(exit_cond, i, bid_array, ask_array, indicators, sl_price, tp_price, position_type)
-                if exit_signal:
-                    if position_type == 'BUY' and exit_signal == 'sell':
-                        exit_price = bid_array[i][3]  # exit at bid for long
-                        closed = True
-                        reason = 'Indicator'
-                    elif position_type == 'SELL' and exit_signal == 'buy':
-                        exit_price = ask_array[i][3]  # exit at ask for short
-                        closed = True
-                        reason = 'Indicator'
-
-            if closed:
-                # Calculate P&L
-                if position_type == 'BUY':
-                    pip_pnl = (exit_price - entry_price) / pip_size
-                else:
-                    pip_pnl = (entry_price - exit_price) / pip_size
-                pip_val = get_pip_value(pair_name, quote, exit_price, ts, ref_prices, 'triangulated')
-                if pip_val is None:
-                    pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
-                pnl_cents = pip_pnl * pip_val * 100 * lot
-                balance_cents += pnl_cents
-                trades_log.append({
-                    'pair': pair_name,
-                    'type': position_type,
-                    'entry_bar': entry_bar,
-                    'exit_bar': i,
-                    'entry': entry_price,
-                    'exit': exit_price,
-                    'reason': reason,
-                    'pnl_cents': pnl_cents,
-                    'lot': lot,
-                    'risk_pips': stop_loss_pips,
-                    'balance_after': balance_cents,
-                    'year': ts.year
-                })
-                in_position = False
+        # After `next`, check if position changed
+        current_pos = strategy.position
+        if current_pos != 0 and not in_position:
+            # Open a new position
+            entry_price = data['close'].iloc[i]   # use close price
+            entry_type = 'BUY' if current_pos == 1 else 'SELL'
+            sl_price = strategy.sl_price if strategy.sl_price else 0.0
+            tp_price = strategy.tp_price if strategy.tp_price else 0.0
+            in_position = True
+            entry_bar = i
+        elif current_pos == 0 and in_position:
+            # Close the position
+            exit_price = data['close'].iloc[i]
+            # Calculate P&L (we ignore pip values for now, just use price difference)
+            if entry_type == 'BUY':
+                pnl = (exit_price - entry_price) * 100000   # lot size approximation
+            else:
+                pnl = (entry_price - exit_price) * 100000
+            # Add to trades
+            trades_log.append({
+                'entry_bar': entry_bar,
+                'exit_bar': i,
+                'entry': entry_price,
+                'exit': exit_price,
+                'type': entry_type,
+                'pnl': pnl,
+                'sl': sl_price,
+                'tp': tp_price
+            })
+            in_position = False
+            # Reset SL/TP
+            sl_price = 0.0
+            tp_price = 0.0
 
     # Build results
     df_trades = pd.DataFrame(trades_log)
     if df_trades.empty:
         return None, None, None
 
-    wins = df_trades[df_trades['pnl_cents'] > 0]['pnl_cents']
-    losses = df_trades[df_trades['pnl_cents'] < 0]['pnl_cents']
+    # Compute metrics (similar to other functions)
+    wins = df_trades[df_trades['pnl'] > 0]['pnl']
+    losses = df_trades[df_trades['pnl'] < 0]['pnl']
     pf = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
-    win_rate = (df_trades['pnl_cents'] > 0).mean() * 100
+    win_rate = (df_trades['pnl'] > 0).mean() * 100
     total_withdrawn_usd = 0
     avg_monthly_usd = 0
     max_dd_cents = 0
