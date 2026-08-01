@@ -38,7 +38,6 @@ class Strategy:
             self.position = 0
 """
 
-# ---------- Shared system prompt ----------
 SYSTEM_PROMPT = f"""
 You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
 
@@ -62,7 +61,6 @@ Return ONLY a valid JSON object, no extra text.
 """
 
 def parse_response(content):
-    """Extract JSON from possible markdown and parse."""
     content = content.strip()
     if content.startswith("```json"):
         content = content[7:]
@@ -80,7 +78,7 @@ def parse_response(content):
     data["params"].setdefault("indicators", [])
     return data
 
-# ---------- Provider 1: Gemini ----------
+# ---------- Providers ----------
 def call_gemini(description, api_key):
     client = genai.Client(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
@@ -90,7 +88,6 @@ def call_gemini(description, api_key):
     )
     return parse_response(response.text)
 
-# ---------- Provider 2: Groq ----------
 def call_groq(description, api_key):
     client = Groq(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
@@ -100,10 +97,8 @@ def call_groq(description, api_key):
         temperature=0.2,
         response_format={"type": "json_object"}
     )
-    content = response.choices[0].message.content
-    return parse_response(content)
+    return parse_response(response.choices[0].message.content)
 
-# ---------- Provider 3: Hugging Face ----------
 def call_huggingface(description, api_token):
     client = InferenceClient(token=api_token)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
@@ -118,7 +113,6 @@ def call_huggingface(description, api_token):
         content = str(response)
     return parse_response(content)
 
-# ---------- Provider 4: GLM-5.2 (Z.ai) ----------
 def call_glm(description, api_key):
     client = openai.OpenAI(
         api_key=api_key,
@@ -131,20 +125,22 @@ def call_glm(description, api_key):
         temperature=0.2,
         response_format={"type": "json_object"}
     )
-    content = response.choices[0].message.content
-    return parse_response(content)
+    return parse_response(response.choices[0].message.content)
 
-# ---------- Main function: try providers in order ----------
+# ---------- Main function ----------
 def parse_strategy_full(description, api_key=None):
+    errors = []
+
     # 1. Gemini
     gemini_key = api_key or os.getenv("GEMINI_API_KEY")
     if gemini_key:
         try:
             return call_gemini(description, gemini_key)
         except Exception as e:
+            errors.append(f"Gemini: {e}")
             print(f"Gemini failed: {e}")
     else:
-        print("Gemini API key not set, skipping.")
+        errors.append("Gemini: API key not set")
 
     # 2. Groq
     groq_key = os.getenv("GROQ_API_KEY")
@@ -152,9 +148,10 @@ def parse_strategy_full(description, api_key=None):
         try:
             return call_groq(description, groq_key)
         except Exception as e:
+            errors.append(f"Groq: {e}")
             print(f"Groq failed: {e}")
     else:
-        print("Groq API key not set, skipping.")
+        errors.append("Groq: API key not set")
 
     # 3. Hugging Face
     hf_token = os.getenv("HF_API_TOKEN")
@@ -162,9 +159,10 @@ def parse_strategy_full(description, api_key=None):
         try:
             return call_huggingface(description, hf_token)
         except Exception as e:
+            errors.append(f"Hugging Face: {e}")
             print(f"Hugging Face failed: {e}")
     else:
-        print("Hugging Face token not set, skipping.")
+        errors.append("Hugging Face: API token not set")
 
     # 4. GLM-5.2 (Z.ai)
     glm_key = os.getenv("ZAI_API_KEY")
@@ -172,16 +170,14 @@ def parse_strategy_full(description, api_key=None):
         try:
             return call_glm(description, glm_key)
         except Exception as e:
+            errors.append(f"GLM-5.2: {e}")
             print(f"GLM-5.2 failed: {e}")
     else:
-        print("Z.ai API key not set, skipping GLM-5.2.")
+        errors.append("GLM-5.2: API key not set")
 
     # If all fail
     raise RuntimeError(
-        "All AI providers failed. Please check your API keys or try again later.\n"
-        "Providers tried: Gemini, Groq, Hugging Face, GLM-5.2.\n"
-        "Set at least one of: GEMINI_API_KEY, GROQ_API_KEY, HF_API_TOKEN, ZAI_API_KEY."
+        "All AI providers failed. Here are the details:\n" + "\n".join(errors)
     )
 
-# Alias for backward compatibility
 parse_strategy = parse_strategy_full
