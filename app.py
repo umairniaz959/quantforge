@@ -12,7 +12,7 @@ from backtest_engine import (
 )
 from ai_parser import parse_strategy_full
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
-from dukascopy_fetcher import fetch_forex_data, get_available_pairs   # <-- new module
+from data_fetcher import fetch_forex_data, get_available_pairs   # <-- new module
 
 # Load .env file (for local development)
 load_dotenv()
