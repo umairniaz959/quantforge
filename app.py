@@ -81,8 +81,7 @@ def main_app():
         st.rerun()
 
     # Navigation
-    page = st.sidebar.radio("Go to", ["Backtest", "My History"])
-
+    page = st.sidebar.radio("Go to", ["Backtest", "My History", "Strategy Studio"])
     if page == "Backtest":
         show_backtest()
     else:
