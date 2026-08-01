@@ -17,8 +17,8 @@ def generate_strategy_code(description, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
-    # Use a raw string with triple single quotes to avoid escaping issues
-    system_prompt = '''
+    # Use triple double quotes to avoid escaping issues
+    system_prompt = """
 You are an expert trading strategy coder. Given a user description, generate a complete Python class that inherits from the Strategy base class.
 
 The base class is:
