@@ -501,5 +501,3 @@ if not st.session_state.authenticated:
     login_signup_page()
 else:
     main_app()
-# At the very bottom of ai_parser.py
-parse_strategy = parse_strategy_full
