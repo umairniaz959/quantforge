@@ -46,8 +46,7 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     if resample_4h:
         yf_interval = "1h"
 
-    # For intraday intervals, Yahoo has a 730-day limit.
-    # If the range exceeds 730 days and interval is intraday, warn and use daily.
+    # Intraday interval limit check
     intraday_intervals = ["1m", "5m", "15m", "30m", "1h"]
     if interval in intraday_intervals and days > 730:
         raise ValueError(
@@ -67,18 +66,26 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
     except Exception as e:
         raise RuntimeError(f"Failed to fetch data from Yahoo Finance: {e}")
 
-    # If df is empty or not a DataFrame, handle
-    if df is None or df.empty:
+    # ---- CRITICAL FIX: check type and content ----
+    if df is None:
         raise ValueError(f"No data returned for {symbol} from {start_date} to {end_date} with interval {interval}. "
                          f"Try a different interval or date range.")
+    
     if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"Unexpected data format from Yahoo Finance: {type(df)}. "
-                        f"Try a different interval or date range.")
+        raise TypeError(f"Unexpected data type from Yahoo Finance: {type(df)}. "
+                        f"This usually means the ticker '{ticker}' is not available or the request failed.")
+    
+    if df.empty:
+        raise ValueError(f"Empty DataFrame for {symbol} from {start_date} to {end_date} with interval {interval}. "
+                         f"Try a different interval or date range.")
 
-    # Ensure columns exist
-    if 'Open' not in df.columns:
-        raise ValueError(f"Data does not contain expected OHLC columns. Found: {df.columns.tolist()}")
+    # Ensure required columns exist
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Data missing required columns: {missing}. Found columns: {df.columns.tolist()}")
 
+    # Clean and select
     df.columns = [c.lower() for c in df.columns]
     df = df[['open', 'high', 'low', 'close']]
 
