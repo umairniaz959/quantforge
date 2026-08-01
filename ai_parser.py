@@ -38,6 +38,7 @@ class Strategy:
             self.position = 0
 """
 
+# ---------- Shared system prompt ----------
 SYSTEM_PROMPT = f"""
 You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
 
@@ -78,53 +79,76 @@ def parse_response(content):
     data["params"].setdefault("indicators", [])
     return data
 
-# ---------- Providers ----------
+# ---------- Provider 1: Gemini ----------
 def call_gemini(description, api_key):
     client = genai.Client(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=full_prompt,
-    )
+    # Try gemini-1.5-flash if 2.0 is exhausted
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=full_prompt,
+        )
+    except Exception:
+        # Fallback to 1.5-flash (often has separate quota)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=full_prompt,
+        )
     return parse_response(response.text)
 
+# ---------- Provider 2: Groq (updated model) ----------
 def call_groq(description, api_key):
     client = Groq(api_key=api_key)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
+    # Use a currently supported model
     response = client.chat.completions.create(
-        model="llama3-70b-8192",
+        model="llama-3.1-70b-versatile",   # updated from decommissioned model
         messages=[{"role": "user", "content": full_prompt}],
         temperature=0.2,
         response_format={"type": "json_object"}
     )
     return parse_response(response.choices[0].message.content)
 
+# ---------- Provider 3: Hugging Face (fixed method) ----------
 def call_huggingface(description, api_token):
     client = InferenceClient(token=api_token)
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    response = client.post(
+    # Use the correct method: text_generation
+    response = client.text_generation(
         model="meta-llama/Llama-3.2-3B-Instruct",
-        inputs=full_prompt,
-        parameters={"temperature": 0.2, "max_new_tokens": 2048}
+        prompt=full_prompt,
+        max_new_tokens=2048,
+        temperature=0.2,
+        return_full_text=False
     )
-    if isinstance(response, list) and len(response) > 0:
-        content = response[0].get("generated_text", "")
-    else:
-        content = str(response)
+    # Response is a string directly
+    content = response
     return parse_response(content)
 
+# ---------- Provider 4: GLM-5.2 (Z.ai) – fixed endpoint and model ----------
 def call_glm(description, api_key):
     client = openai.OpenAI(
         api_key=api_key,
-        base_url="https://api.z.ai/v1"
+        base_url="https://api.z.ai/v1"   # keep as is
     )
     full_prompt = SYSTEM_PROMPT + "\nUser description: " + description
-    response = client.chat.completions.create(
-        model="glm-5.2",
-        messages=[{"role": "user", "content": full_prompt}],
-        temperature=0.2,
-        response_format={"type": "json_object"}
-    )
+    # Try different model names – "glm-4-plus" is the current stable one
+    try:
+        response = client.chat.completions.create(
+            model="glm-4-plus",          # updated from "glm-5.2"
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+    except Exception:
+        # Fallback to "glm-4-flash" if plus fails
+        response = client.chat.completions.create(
+            model="glm-4-flash",
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
     return parse_response(response.choices[0].message.content)
 
 # ---------- Main function ----------
