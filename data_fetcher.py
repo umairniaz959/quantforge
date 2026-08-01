@@ -4,8 +4,6 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import requests
 import io
-import zipfile
-import os
 import pickle
 from pathlib import Path
 
@@ -27,6 +25,7 @@ PAIR_MAP = {
     "GBPJPY": "GBPJPY=X",
 }
 
+# Dukascopy instrument mapping
 INSTRUMENT_MAP = {
     "EURUSD": "EUR/USD",
     "GBPUSD": "GBP/USD",
@@ -40,6 +39,7 @@ INSTRUMENT_MAP = {
     "GBPJPY": "GBP/JPY",
 }
 
+# Interval mapping for Yahoo Finance
 INTERVAL_MAP = {
     "1m": "1m",
     "5m": "5m",
@@ -72,21 +72,24 @@ def generate_synthetic_data(symbol, start_date, end_date, interval, seed=42):
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
     
-    # Map interval to frequency for date range
+    # Valid pandas frequency strings (lowercase)
     freq_map = {
-        "1m": "1min",
+        "1m": "min",      # minute
         "5m": "5min",
         "15m": "15min",
         "30m": "30min",
-        "1h": "1H",
-        "4h": "4H",
-        "1d": "1D",
-        "1w": "1W",
-        "1mn": "1MS",
+        "1h": "h",        # hour (lowercase)
+        "4h": "4h",
+        "1d": "D",
+        "1w": "W",
+        "1mn": "MS",      # month start
     }
-    freq = freq_map.get(interval, "1H")
+    freq = freq_map.get(interval, "h")
+    
+    # Create date range
     idx = pd.date_range(start=start, end=end, freq=freq)
     if len(idx) == 0:
+        # If no bars, create 100 bars starting from start
         idx = pd.date_range(start=start, periods=100, freq=freq)
     
     # Random walk
@@ -134,11 +137,13 @@ def fetch_dukascopy(symbol, start_date, end_date, interval):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     
-    # For 4h, we need 1h data, so we adjust
+    # For 4h, we need 1h data
     if interval == "4h":
-        interval = "1h"
+        fetch_interval = "1h"
+    else:
+        fetch_interval = interval
     
-    period = DUKAS_PERIOD.get(interval)
+    period = DUKAS_PERIOD.get(fetch_interval)
     if period is None:
         return None
     
@@ -151,7 +156,6 @@ def fetch_dukascopy(symbol, start_date, end_date, interval):
         month = str(current_date.month).zfill(2)
         day = str(current_date.day).zfill(2)
         
-        # Try to get tick data (CSV)
         csv_url = f"https://data.dukascopy.com/datafeed/{instrument_code}/{year}/{month}/{day}/00h_tick.csv"
         try:
             response = requests.get(csv_url, timeout=10)
@@ -162,7 +166,7 @@ def fetch_dukascopy(symbol, start_date, end_date, interval):
                 if not df_day.empty:
                     df_day.set_index('timestamp', inplace=True)
                     # Resample to requested interval
-                    ohlc = df_day['bid'].resample(interval).ohlc()
+                    ohlc = df_day['bid'].resample(fetch_interval).ohlc()
                     ohlc.columns = ['open', 'high', 'low', 'close']
                     all_data.append(ohlc)
         except Exception:
@@ -176,7 +180,17 @@ def fetch_dukascopy(symbol, start_date, end_date, interval):
     df = df[~df.index.duplicated(keep='first')]
     df = df.sort_index()
     df = df.dropna()
-    return df
+    
+    # If we requested 4h, resample to 4h
+    if interval == "4h" and not df.empty:
+        df = df.resample('4h').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last'
+        }).dropna()
+    
+    return df if not df.empty else None
 
 # ---------- Yahoo fetcher ----------
 def fetch_yahoo(symbol, start_date, end_date, interval):
@@ -215,7 +229,7 @@ def fetch_yahoo(symbol, start_date, end_date, interval):
     if resample_4h:
         if len(df) < 4:
             return None
-        df = df.resample('4H').agg({
+        df = df.resample('4h').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
