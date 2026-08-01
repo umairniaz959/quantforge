@@ -38,11 +38,17 @@ def parse_strategy_full(description, api_key=None):
     if api_key is None:
         api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        return fallback_full(description)
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-    system_prompt = f"""
+        raise RuntimeError("No Gemini API key found. Please set GEMINI_API_KEY in your environment or secrets.")
+    
+    # List of models to try in order (most stable first)
+    models_to_try = ["gemini-1.0-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
+            
+            system_prompt = f"""
 You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
 
 1. "code": a complete Python class `UserStrategy` that inherits from the provided `Strategy` base class.
@@ -61,58 +67,34 @@ The base class is:
 
 Return ONLY a valid JSON object, no extra text.
 """
-    full_prompt = system_prompt + "\nUser description: " + description
-    response = model.generate_content(full_prompt)
-    content = response.text.strip()
-    try:
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        data = json.loads(content)
-        data.setdefault("code", fallback_code())
-        data.setdefault("summary", "Strategy generated.")
-        data.setdefault("params", {})
-        data["params"].setdefault("stop_loss_pips", 20)
-        data["params"].setdefault("take_profit_pips", 40)
-        data["params"].setdefault("risk_per_trade", 2.0)
-        data["params"].setdefault("indicators", [])
-        return data
-    except Exception as e:
-        print(f"JSON parsing error: {e}\nResponse: {content}")
-        return fallback_full(description)
+            full_prompt = system_prompt + "\nUser description: " + description
+            response = model.generate_content(full_prompt)
+            content = response.text.strip()
+            
+            # Clean markdown fences if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+                
+            data = json.loads(content)
+            # Ensure required keys exist
+            data.setdefault("code", "")
+            data.setdefault("summary", "Strategy generated.")
+            data.setdefault("params", {})
+            data["params"].setdefault("stop_loss_pips", 20)
+            data["params"].setdefault("take_profit_pips", 40)
+            data["params"].setdefault("risk_per_trade", 2.0)
+            data["params"].setdefault("indicators", [])
+            return data
+            
+        except Exception as e:
+            last_error = e
+            print(f"Model {model_name} failed: {e}")
+            continue  # try next model
 
-def fallback_full(description):
-    return {
-        "code": fallback_code(),
-        "summary": "This strategy uses a 5‑period SMA crossing above/below a 20‑period SMA to trigger buy/sell signals.",
-        "params": {
-            "stop_loss_pips": 20,
-            "take_profit_pips": 40,
-            "risk_per_trade": 2.0,
-            "indicators": [
-                {"name": "sma", "period": 5, "source": "close"},
-                {"name": "sma", "period": 20, "source": "close"}
-            ]
-        }
-    }
-
-def fallback_code():
-    return """
-class UserStrategy(Strategy):
-    def init(self):
-        self.data['sma5'] = self.data['close'].rolling(5).mean()
-        self.data['sma20'] = self.data['close'].rolling(20).mean()
-    def next(self, i):
-        if i < 20:
-            return
-        if self.position == 0:
-            if self.data['sma5'].iloc[i] > self.data['sma20'].iloc[i] and self.data['sma5'].iloc[i-1] <= self.data['sma20'].iloc[i-1]:
-                self.buy(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]-self.stop_loss_pips*0.0001, tp=self.data['close'].iloc[i]+self.take_profit_pips*0.0001)
-            elif self.data['sma5'].iloc[i] < self.data['sma20'].iloc[i] and self.data['sma5'].iloc[i-1] >= self.data['sma20'].iloc[i-1]:
-                self.sell(self.data['close'].iloc[i], sl=self.data['close'].iloc[i]+self.stop_loss_pips*0.0001, tp=self.data['close'].iloc[i]-self.take_profit_pips*0.0001)
-        else:
-            pass
-"""
+    # If all models failed
+    error_msg = f"All Gemini models failed. Last error: {last_error}"
+    raise RuntimeError(error_msg)
