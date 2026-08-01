@@ -11,7 +11,19 @@ from backtest_engine import (
 )
 from ai_parser import parse_strategy
 from db import init_db, register_user, login_user, save_backtest_result, get_user_results
+import os
+import streamlit as st
+from dotenv import load_dotenv
 
+# 1. Load .env file (for local development)
+load_dotenv()
+
+# 2. Override with Streamlit Secrets if running on Streamlit Cloud
+#    (This is where you'll store the key safely on GitHub/Cloud)
+if hasattr(st, 'secrets') and "GEMINI_API_KEY" in st.secrets:
+    os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+
+# Now the key is available via os.getenv("GEMINI_API_KEY") anywhere in your app
 # --- Initialize database ---
 init_db()
 
