@@ -88,7 +88,7 @@ def get_pip_value_usd_triangulated(pair_name, price, timestamp, ref_prices, lot_
         return pip_value_quote / conv_rate
     return None
 
-def get_pip_value(pair_name, quote, price, timestamp, ref_prices, mode='static'):
+def get_pip_value(pair_name, quote, price, timestamp, ref_prices, mode='triangulated'):
     if mode == 'static':
         return get_pip_value_usd_static(quote, price)
     return get_pip_value_usd_triangulated(pair_name, price, timestamp, ref_prices)
@@ -159,12 +159,14 @@ def load_uploaded_data(uploaded_files, start_date=None, end_date=None):
         bid_arrays[pair_name] = bid_dfs[pair_name].reindex(master_index).to_numpy(dtype=np.float64)
         ask_arrays[pair_name] = ask_dfs[pair_name].reindex(master_index).to_numpy(dtype=np.float64)
 
+    # Build reference prices for all USD-based pairs to enable triangulation
     ref_prices = {}
     for pair_name in bid_dfs:
         base, quote = get_pair_currencies(pair_name)
         if base == 'USD' or quote == 'USD':
             s = bid_dfs[pair_name]['close'].reindex(master_index)
             ref_prices[pair_name] = {ts: v for ts, v in zip(master_index, s.values) if not np.isnan(v)}
+    # Additional: for cross pairs we rely on these USD pairs being present
 
     return list(bid_arrays.keys()), master_index, bid_arrays, ask_arrays, ref_prices
 
@@ -183,7 +185,8 @@ def get_spread_pips(pair_name, bid_price, ask_price):
 def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
                              risk_cents=RISK_CENTS,
                              withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
-                             withdrawal_pct_rest=WITHDRAWAL_PCT_REST):
+                             withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
+                             reset_balance_monthly=True):
     n = len(master_index)
     pip_sizes = {p: get_pip_size(get_pair_currencies(p)[1]) for p in pair_names}
     point_sizes = {p: pip_sizes[p] / 10.0 for p in pair_names}
@@ -250,7 +253,8 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                     pip_pnl = (exit_price - tr['entry']) / pip_size if tr['type'] == 'BUY' \
                         else (tr['entry'] - exit_price) / pip_size
                     close_ref_price = cb if tr['type'] == 'BUY' else ca
-                    pip_val = get_pip_value(pair_name, quote, close_ref_price, ts, ref_prices, 'static')
+                    # --- FIX: use triangulated pip value ---
+                    pip_val = get_pip_value(pair_name, quote, close_ref_price, ts, ref_prices, 'triangulated')
                     if pip_val is None:
                         pip_val = tr['pip_val_entry']
                     pnl_cents = pip_pnl * pip_val * 100 * tr['lot']
@@ -367,7 +371,8 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                                 pat['state'] = 5
                                 continue
 
-                            pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'static')
+                            # --- FIX: use triangulated pip value ---
+                            pip_val = get_pip_value(pair_name, quote, entry_price, ts, ref_prices, 'triangulated')
                             if pip_val is None:
                                 pat['state'] = 5
                                 continue
@@ -425,15 +430,26 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
             else:
                 wd_pct = withdrawal_pct_rest
 
-            if month_pnl > 0:
-                withdraw_amount = int(month_pnl * wd_pct / 100)
-                total_withdrawn_cents += withdraw_amount
-                remaining_profit = month_pnl - withdraw_amount
-                balance_cents = STARTING_BALANCE_CENTS + remaining_profit
+            if reset_balance_monthly:
+                # Original behavior: withdraw and reset to starting capital
+                if month_pnl > 0:
+                    withdraw_amount = int(month_pnl * wd_pct / 100)
+                    total_withdrawn_cents += withdraw_amount
+                    remaining_profit = month_pnl - withdraw_amount
+                    balance_cents = STARTING_BALANCE_CENTS + remaining_profit
+                else:
+                    withdraw_amount = 0
+                    remaining_profit = month_pnl
+                    balance_cents = STARTING_BALANCE_CENTS + remaining_profit
             else:
-                withdraw_amount = 0
-                remaining_profit = month_pnl
-                balance_cents = month_start_balance
+                # Cumulative: withdraw but do not reset balance
+                if month_pnl > 0:
+                    withdraw_amount = int(month_pnl * wd_pct / 100)
+                    total_withdrawn_cents += withdraw_amount
+                    balance_cents -= withdraw_amount  # we already have the profit in balance
+                else:
+                    withdraw_amount = 0
+                # balance stays as is (no reset)
 
             monthly_details.append({
                 'Month': month_key,
@@ -441,7 +457,7 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
                 'Monthly P&L (cents)': month_pnl,
                 'Withdrawal %': wd_pct,
                 'Withdrawn (cents)': withdraw_amount,
-                'Remaining P&L (cents)': remaining_profit,
+                'Remaining P&L (cents)': month_pnl - withdraw_amount,
                 'Balance After (cents)': balance_cents,
             })
 
@@ -486,7 +502,8 @@ def run_simulation_on_arrays(pair_names, master_index, bid_arrays, ask_arrays, r
 def run_backtest_from_files(uploaded_files, risk_cents=RISK_CENTS,
                             withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
                             withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
-                            start_date=None, end_date=None):
+                            start_date=None, end_date=None,
+                            reset_balance_monthly=True):
     try:
         pair_names, master_index, bid_arrays, ask_arrays, ref_prices = load_uploaded_data(
             uploaded_files, start_date, end_date
@@ -495,18 +512,32 @@ def run_backtest_from_files(uploaded_files, risk_cents=RISK_CENTS,
         raise RuntimeError(f"Failed to load data: {e}")
     return run_simulation_on_arrays(
         pair_names, master_index, bid_arrays, ask_arrays, ref_prices,
-        risk_cents, withdrawal_pct_first, withdrawal_pct_rest
+        risk_cents, withdrawal_pct_first, withdrawal_pct_rest,
+        reset_balance_monthly=reset_balance_monthly
     )
 
 def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
                        withdrawal_pct_first=WITHDRAWAL_PCT_FIRST_YEAR,
-                       withdrawal_pct_rest=WITHDRAWAL_PCT_REST):
-    blocks = [
-        ('2005-2009', 2005, 2009),
-        ('2010-2014', 2010, 2014),
-        ('2015-2019', 2015, 2019),
-        ('2020-2024', 2020, 2024),
-    ]
+                       withdrawal_pct_rest=WITHDRAWAL_PCT_REST,
+                       block_years=5,
+                       reset_balance_monthly=True):
+    # Load data to get full date range
+    try:
+        pair_names, master_index, _, _, _ = load_uploaded_data(uploaded_files, start_date=None, end_date=None)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load data for WFV: {e}")
+    if len(master_index) == 0:
+        return [], {'Overall Trades': 0, 'Total Withdrawn (USD)': 0, 'Average Monthly (USD)': 0}
+
+    start_year = master_index[0].year
+    end_year = master_index[-1].year
+    blocks = []
+    current_start = start_year
+    while current_start <= end_year:
+        block_end = min(current_start + block_years - 1, end_year)
+        blocks.append((f"{current_start}-{block_end}", current_start, block_end))
+        current_start = block_end + 1
+
     block_results = []
     combined_trades = 0
     combined_withdrawn_usd = 0
@@ -521,7 +552,8 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
             withdrawal_pct_first=withdrawal_pct_first,
             withdrawal_pct_rest=withdrawal_pct_rest,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            reset_balance_monthly=reset_balance_monthly
         )
         if results is not None:
             block_results.append({
@@ -536,7 +568,7 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
             })
             combined_trades += results['total_trades']
             combined_withdrawn_usd += results['total_withdrawn_usd']
-            combined_months += 60
+            combined_months += 60  # approximate: each block is 5 years
         else:
             block_results.append({
                 'Block': label,
@@ -561,7 +593,8 @@ def run_wfv_from_files(uploaded_files, risk_cents=RISK_CENTS,
 # --------------------------------------------------------------
 def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
                       start_date=None, end_date=None,
-                      demo_sl=20, demo_tp=40):
+                      demo_sl=20, demo_tp=40,
+                      reset_balance_monthly=True):
     """
     A simple MA crossover strategy for demo purposes.
     This is NOT the validated strategy – it is a teaching example.
@@ -613,18 +646,16 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
 
         if buy_signal:
             entry_price = ask_array[i][3]  # ask close
-            # Use demo SL/TP
             sl_price = entry_price - demo_sl * pip_size
             tp_price = entry_price + demo_tp * pip_size
             cmd = 'BUY'
             risk_pips = demo_sl
-            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
+            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'triangulated')
             if pip_val is None:
                 continue
             risk_cents_per_lot = risk_pips * pip_val * 100
             lot = risk_cents / risk_cents_per_lot
 
-            # Simulate exit after 1 bar (simplistic)
             exit_price = close[i+1]
             pnl_cents = ((exit_price - entry_price) / pip_size) * pip_val * 100 * lot
             balance_cents += pnl_cents
@@ -646,7 +677,7 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
             tp_price = entry_price - demo_tp * pip_size
             cmd = 'SELL'
             risk_pips = demo_sl
-            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'static')
+            pip_val = get_pip_value(pair_name, get_pair_currencies(pair_name)[1], entry_price, ts, ref_prices, 'triangulated')
             if pip_val is None:
                 continue
             risk_cents_per_lot = risk_pips * pip_val * 100
@@ -667,7 +698,7 @@ def run_demo_backtest(uploaded_files, risk_cents=RISK_CENTS,
             if dd > month_max_dd_cents:
                 month_max_dd_cents = dd
 
-        # End of month
+        # End of month (simplified: no withdrawal in demo, just record)
         if current_month != month_key:
             month_pnl = balance_cents - month_start_balance
             monthly_pnl_list.append(month_pnl)
