@@ -780,6 +780,12 @@ def run_generated_strategy(uploaded_files, user_code, params,
     strategy.risk_per_trade = params.get('risk_per_trade', 2.0)
     strategy.init()
 
+    # ---- Capture data sample AFTER init (includes new columns) ----
+    data_sample = data.head(10).to_dict()   # capture first 10 rows
+    print(f"Columns after init: {data.columns.tolist()}")
+    print(f"First 5 rows of prev_day_close:\n{data['prev_day_close'].head(5)}")   # log to console
+    print(f"Number of non-null in prev_day_close: {data['prev_day_close'].notna().sum()}")
+
     balance = initial_balance
     trades_log = []
     in_position = False
@@ -804,10 +810,11 @@ def run_generated_strategy(uploaded_files, user_code, params,
             tp_price = strategy.tp_price if strategy.tp_price is not None else 0.0
             in_position = True
             entry_bar = i
+            print(f"OPEN {entry_type} at bar {i}, price {entry_price:.5f}")   # log open
         elif current_pos == 0 and in_position:
             exit_price = data['close'].iloc[i]
             if entry_type == 'BUY':
-                pnl = (exit_price - entry_price) * 100000   # simplistic lot size
+                pnl = (exit_price - entry_price) * 100000
             else:
                 pnl = (entry_price - exit_price) * 100000
             trades_log.append({
@@ -820,6 +827,7 @@ def run_generated_strategy(uploaded_files, user_code, params,
                 'sl': sl_price,
                 'tp': tp_price
             })
+            print(f"CLOSE {entry_type} at bar {i}, exit {exit_price:.5f}, PnL {pnl:.2f}")
             in_position = False
             sl_price = 0.0
             tp_price = 0.0
@@ -828,7 +836,7 @@ def run_generated_strategy(uploaded_files, user_code, params,
     if df_trades.empty:
         debug_info = {
             "strategy_code": user_code_fixed,
-            "data_head": data.head(10).to_dict(),
+            "data_head": data_sample,   # now includes prev_day_close
             "data_shape": data.shape,
             "columns": data.columns.tolist(),
             "message": "No trades generated. Check conditions and data range."
