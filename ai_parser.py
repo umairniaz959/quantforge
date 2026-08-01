@@ -39,25 +39,33 @@ def parse_strategy_full(description, api_key=None):
         api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found. Please set GEMINI_API_KEY in your environment or secrets.")
-    
+
     try:
         genai.configure(api_key=api_key)
-        # List all available models
-        models = genai.list_models()
-        # Filter for models that support generateContent and contain "gemini"
-        available_models = [
-            m.name for m in models 
+        # List all models
+        all_models = genai.list_models()
+        # Filter for those that support generateContent and contain "gemini"
+        candidates = [
+            m.name for m in all_models
             if "gemini" in m.name.lower() and "generateContent" in m.supported_generation_methods
         ]
-        if not available_models:
-            raise RuntimeError(f"No Gemini models available with generateContent support. Available models: {[m.name for m in models]}")
-        
-        # Pick the first available model
-        model_name = available_models[0]
-        print(f"Using Gemini model: {model_name}")
-        model = genai.GenerativeModel(model_name)
-        
-        system_prompt = f"""
+        # Exclude known problematic or deprecated models
+        excluded_substrings = ["2.5", "2.0", "1.0-pro"]  # some might be deprecated; you can adjust
+        filtered = [m for m in candidates if not any(x in m for x in excluded_substrings)]
+        if not filtered:
+            # If filtering removes everything, use the original candidates (maybe they'll work)
+            filtered = candidates
+        if not filtered:
+            raise RuntimeError(f"No Gemini models available. Available: {candidates}")
+
+        # Try each model until one works
+        last_error = None
+        for model_name in filtered:
+            try:
+                print(f"Trying model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                
+                system_prompt = f"""
 You are an expert trading strategy coder. Given a user description, generate three things in a single JSON object:
 
 1. "code": a complete Python class `UserStrategy` that inherits from the provided `Strategy` base class.
@@ -76,28 +84,35 @@ The base class is:
 
 Return ONLY a valid JSON object, no extra text.
 """
-        full_prompt = system_prompt + "\nUser description: " + description
-        response = model.generate_content(full_prompt)
-        content = response.text.strip()
-        
-        # Clean markdown fences if present
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-            
-        data = json.loads(content)
-        # Ensure required keys exist
-        data.setdefault("code", "")
-        data.setdefault("summary", "Strategy generated.")
-        data.setdefault("params", {})
-        data["params"].setdefault("stop_loss_pips", 20)
-        data["params"].setdefault("take_profit_pips", 40)
-        data["params"].setdefault("risk_per_trade", 2.0)
-        data["params"].setdefault("indicators", [])
-        return data
-        
+                full_prompt = system_prompt + "\nUser description: " + description
+                response = model.generate_content(full_prompt)
+                content = response.text.strip()
+                
+                # Clean markdown fences
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                    
+                data = json.loads(content)
+                data.setdefault("code", "")
+                data.setdefault("summary", "Strategy generated.")
+                data.setdefault("params", {})
+                data["params"].setdefault("stop_loss_pips", 20)
+                data["params"].setdefault("take_profit_pips", 40)
+                data["params"].setdefault("risk_per_trade", 2.0)
+                data["params"].setdefault("indicators", [])
+                # Success, return
+                return data
+            except Exception as e:
+                last_error = e
+                print(f"Model {model_name} failed: {e}")
+                continue  # try next
+
+        # If we get here, all models failed
+        raise RuntimeError(f"All available Gemini models failed. Last error: {last_error}. Tried: {filtered}")
+
     except Exception as e:
         raise RuntimeError(f"Failed to generate strategy code with Gemini: {e}")
