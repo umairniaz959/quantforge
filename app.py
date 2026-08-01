@@ -1,19 +1,9 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import datetime
-import os
-from dotenv import load_dotenv
 from backtest_engine import (
     run_backtest_from_files,
     run_wfv_from_files,
     run_demo_backtest,
-    run_custom_strategy,
-    run_generated_strategy
+    run_generated_strategy   # <-- only this new one
 )
-from ai_parser import parse_strategy
-from db import init_db, register_user, login_user, save_backtest_result, get_user_results
-
 # Load .env file (for local development)
 load_dotenv()
 
