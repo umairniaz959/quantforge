@@ -7,4 +7,5 @@ plotly
 openai
 python-dotenv
 google-generativeai
-dukascopy
+yfinance
+requests
