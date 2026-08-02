@@ -148,13 +148,13 @@ def fetch_yahoo(symbol, start_date, end_date, interval):
     except Exception:
         return None
 
-    # ---- FIX: Check for tuple ----
+    # ---- Check for tuple ----
     if df is None:
         return None
     if isinstance(df, tuple):
-        # If it's a tuple, it's likely an error tuple (None, error)
         return None
-
+    if not isinstance(df, pd.DataFrame):
+        return None
     if df.empty:
         return None
 
@@ -223,13 +223,14 @@ def fetch_forex_data(symbol, start_date, end_date, interval="1h"):
 
     # 1. Dukascopy
     df = fetch_dukascopy_direct(symbol, start_date, end_date, interval)
-    if df is not None and not df.empty:
+    # Check if df is valid
+    if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
         save_to_cache(key, df)
         return df, 'dukascopy', False
 
     # 2. Yahoo
     df = fetch_yahoo(symbol, start_date, end_date, interval)
-    if df is not None and not df.empty:
+    if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
         save_to_cache(key, df)
         return df, 'yahoo', False
 
